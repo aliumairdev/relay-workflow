@@ -238,10 +238,10 @@ Common conventions: all scripts read `workflow.yaml` (path from `RELAY_CONFIG` o
 
 ```yaml
 tiers:
-  T0: {name: docs,        claude: claude-haiku-5-5,  codex: "<mini-model>",     effort: medium, context_tokens: 200000, cost_rel: 1,  strengths: [summaries, docs]}
-  T1: {name: implement,   claude: claude-sonnet-5-5, codex: "<default-model>",  effort: medium, context_tokens: 200000, cost_rel: 4,  strengths: [implementation, routine-review, git-ops]}
-  T2: {name: high-risk,   claude: claude-opus-5-5,   codex: "<top-model>",      effort: medium, context_tokens: 200000, cost_rel: 20, strengths: [architecture, high-risk-review, audit]}
-  T3: {name: exceptional, claude: claude-fable-5-1,  codex: null,                effort: medium, context_tokens: 200000, cost_rel: 40, strengths: [cross-system, long-horizon]}
+  T0: {name: docs,        claude: claude-haiku-5-5,  codex: luna,               effort: medium, context_tokens: 200000, cost_rel: 1,  strengths: [summaries, docs]}
+  T1: {name: implement,   claude: claude-sonnet-5-5, codex: sol,                effort: medium, context_tokens: 200000, cost_rel: 4,  strengths: [implementation, routine-review, git-ops]}
+  T2: {name: high-risk,   claude: claude-opus-5-5,   codex: astra,              effort: medium, context_tokens: 200000, cost_rel: 20, strengths: [architecture, high-risk-review, audit]}
+  T3: {name: exceptional, claude: claude-fable-5-1,  codex: astra,               effort: medium, context_tokens: 200000, cost_rel: 40, strengths: [cross-system, long-horizon]}
 
 routing:
   allow_high_effort: false
