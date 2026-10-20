@@ -1,0 +1,24 @@
+#!/usr/bin/env node
+// relay-update [--dry-run] [--keep | --overwrite] [--to X]
+// Re-plans from the lock. Unedited generated content updates; hand-edited managed content needs --keep (skip) or --overwrite (back up and replace).
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { parse, out, run } from '../lib/cli.mjs';
+import { update, VERSION } from '../lib/install.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { keep: { type: 'boolean' }, overwrite: { type: 'boolean' }, to: { type: 'string' }, root: { type: 'string' }, skills: { type: 'string' } });
+  if (flags.to && flags.to !== VERSION) throw new RelayError(`this relay-workflow is ${VERSION}: run \`npx relay-workflow@${flags.to} update\` to move to ${flags.to}`, EXIT.INVALID);
+  if (flags.keep && flags.overwrite) throw new RelayError('--keep and --overwrite are mutually exclusive', EXIT.INVALID);
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const root = path.resolve(flags.root || (top.status === 0 ? top.stdout.trim() : process.cwd()));
+  const r = update(root, { dryRun: !!flags['dry-run'], keep: !!flags.keep, overwrite: !!flags.overwrite, skills: flags.skills });
+  if (r.dryRun) { out(flags, { ...r, diffs: undefined }, `${r.diffs || '(no changes)'}\n--dry-run: ${r.apply.length} to update, ${r.create.length} to create, ${r.conflicts.length} hand-edited; nothing was written.`); return EXIT.OK; }
+  if (r.needsHuman) {
+    out(flags, r, `hand-edited managed content, not changed: ${r.conflicts.join(', ')}\nRe-run with --keep to keep your edits (skipping those), or --overwrite to replace them (originals are backed up to .relay/backup).`);
+    return EXIT.NEEDS_HUMAN;
+  }
+  out(flags, r, `updated ${r.apply.length}, created ${r.create.length}${r.kept.length ? `, kept your edits in: ${r.kept.join(', ')}` : ''}`);
+  return EXIT.OK;
+});

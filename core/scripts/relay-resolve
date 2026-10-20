@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+// relay-resolve [--strategy-map file.(json|yaml)]   run inside a repo mid-merge; exit 0 all resolved, 2 leftovers
+import fs from 'node:fs';
+import YAML from 'yaml';
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { resolveConflicts } from '../lib/resolve.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { 'strategy-map': { type: 'string' } });
+  let resolvers = [];
+  if (flags['strategy-map']) {
+    const v = YAML.parse(fs.readFileSync(flags['strategy-map'], 'utf8'));
+    resolvers = Array.isArray(v) ? v : v?.resolvers;
+    if (!Array.isArray(resolvers)) throw new RelayError('strategy map must be a list of {match, strategy}', EXIT.INVALID);
+  } else resolvers = loadConfig({ optional: true })?.resolvers || [];
+  const r = await resolveConflicts({ resolvers });
+  out(flags, r, [...r.resolved.map((f) => `resolved: ${f}`), ...r.leftovers.map((f) => `UNRESOLVED: ${f}`)].join('\n') || 'nothing to resolve');
+  return r.leftovers.length ? EXIT.NEEDS_HUMAN : EXIT.OK;
+});

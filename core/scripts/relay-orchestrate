@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// relay-orchestrate on|off|status — marks this project's main session as the orchestrator so the Stop hook keeps it working.
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig, relayDir } from '../lib/config.mjs';
+import { iso } from '../lib/clock.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), {});
+  const cfg = loadConfig();
+  const f = path.join(relayDir(cfg), 'orchestrating');
+  const cmd = args[0] || 'status';
+  if (cmd === 'on') { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ since: iso(), pid: process.ppid })); fs.rmSync(path.join(relayDir(cfg), 'stop-count.json'), { force: true }); out(flags, { orchestrating: true }, 'orchestrating: on (Stop hook will keep you working while work remains)'); return EXIT.OK; }
+  if (cmd === 'off') { fs.rmSync(f, { force: true }); out(flags, { orchestrating: false }, 'orchestrating: off'); return EXIT.OK; }
+  if (cmd === 'status') { const on = fs.existsSync(f); out(flags, { orchestrating: on }, `orchestrating: ${on ? 'on' : 'off'}`); return EXIT.OK; }
+  throw new RelayError('usage: relay-orchestrate on|off|status', EXIT.INVALID);
+});

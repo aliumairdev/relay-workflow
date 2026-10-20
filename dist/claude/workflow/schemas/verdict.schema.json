@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "verdict",
+  "type": "object",
+  "required": [
+    "type",
+    "pr",
+    "head_sha",
+    "reviewer",
+    "result",
+    "checklist"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "verdict"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "head_sha": {
+      "type": "string"
+    },
+    "reviewer": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "runtime"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string"
+        }
+      }
+    },
+    "result": {
+      "enum": [
+        "APPROVED",
+        "CHANGES"
+      ]
+    },
+    "checklist": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "PASS",
+          "FAIL",
+          "N/A"
+        ]
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "not_verified": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_score": {
+      "type": "number"
+    },
+    "escalated_to": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "implementer_runtime": {
+      "type": "string"
+    }
+  }
+}

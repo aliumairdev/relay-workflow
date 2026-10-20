@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay agents</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#667085; --line:#e4e7ec; --work:#16a34a; --wait:#d97706; --stale:#dc2626; --idle:#98a2b3; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1318; --card:#171c23; --ink:#e8ebef; --mute:#98a2b3; --line:#2a313b; --accent:#6ea0ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; padding:16px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { font-size:16px; margin:0; }
+  .meta { color:var(--mute); font-size:12px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; margin-right:4px; }
+  main { padding:16px 20px 40px; max-width:1200px; margin:0 auto; display:grid; gap:16px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin:0 0 8px; }
+  .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .stat b { display:block; font-size:24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px; }
+  .agent { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; border-left:4px solid var(--idle); }
+  .agent.working { border-left-color:var(--work); } .agent.waiting { border-left-color:var(--wait); } .agent.stale { border-left-color:var(--stale); }
+  .row { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+  .name { font-weight:600; word-break:break-all; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--idle); }
+  .working .dot { background:var(--work); animation:pulse 1.6s infinite; } .waiting .dot { background:var(--wait); } .stale .dot { background:var(--stale); }
+  @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(22,163,74,.5);} 100% { box-shadow:0 0 0 8px rgba(22,163,74,0);} }
+  @media (prefers-reduced-motion: reduce) { .working .dot { animation:none; } }
+  .doing { margin-top:6px; color:var(--ink); } .sub { color:var(--mute); font-size:12px; margin-top:4px; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+  .col { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .col li { margin:4px 0; } ul { list-style:none; padding:0; margin:0; }
+  .feed li { padding:6px 0; border-bottom:1px solid var(--line); } .feed li:last-child { border:0; }
+  .kind { color:var(--accent); font-size:12px; margin-right:6px; }
+  .empty { color:var(--mute); }
+  .banner { background:#fef3c7; color:#7c2d12; border-radius:8px; padding:8px 12px; }
+  @media (prefers-color-scheme: dark) { .banner { background:#3b2a0d; color:#fcd9a0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Relay agents</h1>
+  <span class="meta" id="meta"></span>
+  <span id="flags"></span>
+</header>
+<main>
+  <div id="banner"></div>
+  <section><h2>Agents</h2><div class="summary" id="summary"></div></section>
+  <section><h2>Who is doing what</h2><div class="grid" id="agents"></div></section>
+  <section><h2>Runtime capacity</h2><div class="summary" id="runtimes"></div></section>
+  <section><h2>Work queue</h2><div class="cols" id="queue"></div></section>
+  <section><h2>Recent activity</h2><div class="col"><ul class="feed" id="feed"></ul></div></section>
+</main>
+<script>
+// Everything from the tracker (titles, journal text) is untrusted: it is only ever assigned with textContent.
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function ago(iso) { if (!iso) return ''; const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000); return s < 90 ? Math.round(s) + 's ago' : s < 5400 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; }
+function until(iso) { const s = (Date.parse(iso) - Date.now()) / 1000; return s <= 0 ? 'expired' : s < 90 ? Math.round(s) + 's left' : Math.round(s / 60) + 'm left'; }
+const LABEL = { working: 'working', waiting: 'waiting (rate limited)', stale: 'stale lease', idle: 'idle' };
+
+function render(s) {
+  $('title').textContent = 'Relay agents: ' + s.project;
+  $('meta').textContent = s.repo + ' · updated ' + ago(s.generated_at) + ' · load ' + s.load.load1 + '/' + s.load.cores;
+  const f = $('flags'); f.replaceChildren();
+  f.append(el('span', 'pill', 'mode ' + s.mode));
+  if (s.orchestrating) f.append(el('span', 'pill', 'orchestrating'));
+  if (s.paused) f.append(el('span', 'pill', 'PAUSED'));
+  const b = $('banner'); b.replaceChildren();
+  if (s.control_plane !== 'ok') b.append(el('div', 'banner', 'Control plane ' + s.control_plane + ' - showing local state only.'));
+
+  const sum = $('summary'); sum.replaceChildren();
+  for (const [k, v] of Object.entries(s.counts)) { const d = el('div', 'stat'); d.append(el('b', '', v), el('span', 'meta', LABEL[k] || k)); sum.append(d); }
+
+  const grid = $('agents'); grid.replaceChildren();
+  if (!s.agents.length) grid.append(el('div', 'empty', 'No agents have run yet. Dispatch an issue to see activity here.'));
+  for (const a of s.agents) {
+    const c = el('div', 'agent ' + a.status);
+    const r = el('div', 'row'); const n = el('span', 'name'); n.append(el('span', 'dot'), document.createTextNode(a.agent_id)); r.append(n, el('span', 'pill', a.runtime || '?'));
+    c.append(r);
+    const state = el('div', 'sub', LABEL[a.status] + (a.task ? ' · ' + a.task : '') + (a.issue ? ' · #' + a.issue : '') + (a.pr ? ' · PR #' + a.pr : ''));
+    c.append(state);
+    if (a.doing) c.append(el('div', 'doing', '[' + a.doing_kind + '] ' + a.doing));
+    if (a.branch) c.append(el('div', 'sub', a.branch));
+    if (a.lease_until) c.append(el('div', 'sub', 'lease ' + until(a.lease_until)));
+    if (a.reason) c.append(el('div', 'sub', a.reason + (a.resume_at ? ', resumes ' + (until(a.resume_at) === 'expired' ? 'now' : 'in ' + until(a.resume_at).replace(' left', '')) : '')));
+    if (a.status === 'idle') c.append(el('div', 'sub', 'last seen ' + ago(a.last_seen) + (a.last_outcome ? ' · last result ' + a.last_outcome : '')));
+    grid.append(c);
+  }
+
+  const rt = $('runtimes'); rt.replaceChildren();
+  for (const r of s.runtimes) { const d = el('div', 'stat'); d.append(el('b', '', r.free_slots + ' free'), el('span', 'meta', r.runtime + ': ' + r.working + ' working, ' + r.waiting + ' waiting, ' + r.idle_agents + ' idle')); rt.append(d); }
+
+  const q = $('queue'); q.replaceChildren();
+  const cols = [['Ready', s.issues.lists.ready, s.issues.by_state.ready], ['In flight', s.issues.lists.in_flight, (s.issues.by_state.claimed || 0) + (s.issues.by_state['in-progress'] || 0)], ['In review', s.issues.lists.review, s.issues.by_state.review], ['Blocked', s.issues.lists.blocked, s.issues.by_state.blocked]];
+  for (const [name, items, count] of cols) {
+    const c = el('div', 'col'); c.append(el('h2', '', name + ' (' + (count || 0) + ')'));
+    const ul = el('ul'); if (!items.length) ul.append(el('li', 'empty', 'none'));
+    for (const i of items) ul.append(el('li', '', '#' + i.number + ' ' + i.title));
+    c.append(ul); q.append(c);
+  }
+  if (s.issues.owner_decisions.length) { const c = el('div', 'col'); c.append(el('h2', '', 'Waiting for you (' + s.issues.owner_decisions.length + ')')); const ul = el('ul'); for (const d of s.issues.owner_decisions) ul.append(el('li', '', '#' + d.issue + ' ' + d.question)); c.append(ul); q.append(c); }
+
+  const feed = $('feed'); feed.replaceChildren();
+  if (!s.feed.length) feed.append(el('li', 'empty', 'nothing yet'));
+  for (const e of s.feed) { const li = el('li'); li.append(el('span', 'kind', e.kind), document.createTextNode((e.issue ? '#' + e.issue + ' ' : '') + e.agent + ': ' + e.text + ' (' + ago(e.at) + ')')); feed.append(li); }
+}
+
+async function tick() {
+  try { const r = await fetch('/api/status', { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); render(await r.json()); }
+  catch (e) { const b = $('banner'); b.replaceChildren(el('div', 'banner', 'Cannot reach the dashboard server (' + e.message + '). Retrying...')); }
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>

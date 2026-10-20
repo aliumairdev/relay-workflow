@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+// relay-status [--json] — claims, leases, issues by state, owner decisions, tier mix, load, mode.
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { gather, renderBrief } from '../lib/status.mjs';
+import { EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), {});
+  const { cfg, cp } = ctx();
+  const s = gather(cfg, cp);
+  const extra = [s.tier_mix ? `Tier mix: ${Object.entries(s.tier_mix).map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(', ')}` : 'Tier mix: no ledger rows yet', `Load: ${s.load.load1} (${s.load.cores} cores)`];
+  out(flags, s, [renderBrief(s), ...extra].join('\n'));
+  return EXIT.OK;
+});

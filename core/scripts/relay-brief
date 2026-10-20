@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// relay-brief render <name> [--var k=v ...] [--out dir] | list
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { renderBrief, briefNames } from '../lib/brief.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { var: { type: 'string', multiple: true }, out: { type: 'string' }, stdout: { type: 'boolean' } });
+  const [cmd, name] = args;
+  if (cmd === 'list') { out(flags, briefNames(), briefNames().join('\n')); return EXIT.OK; }
+  if (cmd !== 'render' || !name) throw new RelayError('usage: relay-brief render <name> [--var k=v ...] [--out dir] [--stdout] | list', EXIT.INVALID);
+  const vars = {};
+  for (const kv of flags.var || []) { const i = kv.indexOf('='); if (i < 1) throw new RelayError(`bad --var ${kv}`, EXIT.INVALID); vars[kv.slice(0, i)] = kv.slice(i + 1); }
+  const cfg = loadConfig({ optional: true });
+  const { text, hash } = renderBrief(name, vars, cfg);
+  if (flags.stdout) { process.stdout.write(text); return EXIT.OK; }
+  const dir = flags.out || path.join(cfg?.__root || process.cwd(), '.relay', 'briefs');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${name}-${hash}.md`);
+  if (!flags['dry-run']) fs.writeFileSync(file, text);
+  out(flags, { path: file, hash, bytes: text.length }, `${file} ${hash}`);
+  return EXIT.OK;
+});

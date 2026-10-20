@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// relay-dashboard [--port 4317] [--host 127.0.0.1] [--once]
+// Live, read-only web UI: which agent is working on what, which are idle/waiting/stale, the queue and recent activity.
+// Binds to localhost by default and never mutates anything. --once prints one JSON snapshot and exits.
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { snapshot } from '../lib/dashboard.mjs';
+import { EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { port: { type: 'string' }, host: { type: 'string' }, once: { type: 'boolean' } });
+  const { cfg, cp } = ctx();
+  if (flags.once) { out({ json: true }, snapshot(cfg, cp)); return EXIT.OK; }
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dashboard', 'index.html'), 'utf8');
+  let cache = { at: 0, body: '' };
+  const srv = http.createServer((req, res) => {
+    const url = req.url.split('?')[0];
+    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" };
+    if (req.method !== 'GET') { res.writeHead(405, headers); return res.end('read-only'); }
+    if (url === '/' || url === '/index.html') { res.writeHead(200, { ...headers, 'Content-Type': 'text/html; charset=utf-8' }); return res.end(html); }
+    if (url === '/api/status') {
+      try {
+        if (Date.now() - cache.at > 2000) cache = { at: Date.now(), body: JSON.stringify(snapshot(cfg, cp)) };
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/json' }); return res.end(cache.body);
+      } catch (e) { res.writeHead(500, { ...headers, 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: String(e.message).split('\n')[0] })); }
+    }
+    res.writeHead(404, headers); res.end('not found');
+  });
+  const port = Number(flags.port ?? 4317), host = flags.host || '127.0.0.1';
+  await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(port, host, resolve); });
+  const addr = srv.address();
+  process.stdout.write(`Relay dashboard: http://${host}:${addr.port}/  (read-only; Ctrl-C to stop)\n`);
+  await new Promise(() => {});
+});

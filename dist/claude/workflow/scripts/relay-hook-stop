@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// Stop: keep the orchestrator working while ready work, reviews or in-flight agents remain.
+// Silent when only owner decisions remain, when paused, when not orchestrating, or after too many continuations.
+import fs from 'node:fs';
+import path from 'node:path';
+import { guard, allow, emit } from '../lib/hooklib.mjs';
+import { controlPlane } from '../adapters/control-plane/github.mjs';
+import { gather } from '../lib/status.mjs';
+import { readState } from '../lib/state.mjs';
+import { relayDir } from '../lib/config.mjs';
+
+guard('stop', (payload, cfg) => {
+  if (!cfg) return allow();
+  const dir = relayDir(cfg);
+  const countFile = path.join(dir, 'stop-count.json');
+  const reset = () => fs.rmSync(countFile, { force: true });
+  if (!fs.existsSync(path.join(dir, 'orchestrating')) || fs.existsSync(path.join(dir, 'pause'))) { reset(); return allow(); }
+  if (readState(cfg).release_status === 'COMPLETE') { reset(); return allow(); }
+
+  const snap = gather(cfg, controlPlane(cfg));
+  if (snap.control_plane !== 'ok') return allow();            // never trap the user when the control plane is down
+  const i = snap.issues;
+  const ready = i.ready, review = i.review + i.changes_requested, inflight = Math.max(i.claimed + i.in_progress, snap.claims.length);
+  if (ready + review + inflight === 0) { reset(); return allow(); }   // only blocked / owner decisions remain
+
+  const max = Number(process.env.RELAY_STOP_MAX || 50);
+  let n = 0; try { n = JSON.parse(fs.readFileSync(countFile, 'utf8')).count || 0; } catch { /* first */ }
+  if (n >= max) {
+    reset();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pause'), `stop-hook paused after ${max} consecutive continuations; delete this file to resume\n`);
+    return allow();
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(countFile, JSON.stringify({ count: n + 1 }));
+  emit({ decision: 'block', reason: `continue: ${ready} ready, ${review} in review, ${inflight} in flight. Run \`relay-lease sweep\`, dispatch ready issues, review and merge approved PRs. Stop only when just owner decisions remain.` });
+  process.exit(0);
+});

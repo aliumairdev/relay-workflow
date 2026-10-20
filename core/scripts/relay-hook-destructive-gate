@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+// PreToolUse(Bash): block destructive commands unless the three facts are supplied or the command is allow-listed.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { guard, allow, deny, toRegExp } from '../lib/hooklib.mjs';
+import { git } from '../lib/exec.mjs';
+import { worktreeRoot, isInside, realish } from '../lib/worktree.mjs';
+import { CORE } from '../lib/config.mjs';
+import YAML from 'yaml';
+
+const REGENERABLE = new Set(['node_modules', 'dist', 'build', '.cache', 'coverage', 'tmp', '.next', 'target', '__pycache__', '.turbo']);
+// Quote-aware split on unquoted && || ; | and newlines.
+function split(cmd) {
+  const out = []; let cur = '', q = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) { cur += c; if (c === q && cmd[i - 1] !== '\\') q = null; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === ';' || c === '\n' || c === '|' || (c === '&' && cmd[i + 1] === '&')) { if (c === '&' || (c === '|' && cmd[i + 1] === '|')) i++; if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+// Commands nested in `sh -c '...'`, `eval '...'`, $(...) and backticks are analysed too.
+function nested(cmd) {
+  const inner = [];
+  for (const m of cmd.matchAll(/\b(?:sh|bash|zsh|dash|eval)\b(?:\s+-[a-z]*c)?\s+("([^"]*)"|'([^']*)')/g)) inner.push(m[2] ?? m[3]);
+  for (const m of cmd.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) inner.push(m[1] ?? m[2]);
+  return inner;
+}
+const tokens = (seg) => (seg.match(/"[^"]*"|'[^']*'|\S+/g) || []).map((t) => t.replace(/^["']|["']$/g, ''));
+
+function profilePatterns(cfg) {
+  const f = path.join(CORE, 'profiles', cfg.project.stack || '_none', 'profile.yaml');
+  try { return (YAML.parse(fs.readFileSync(f, 'utf8')).destructive_patterns || []).map((p) => ({ re: new RegExp(p.pattern, 'i'), why: p.reason })); } catch { return []; }
+}
+
+function analyse(cmd, cwd, cfg, depth = 0) {
+  const hits = [];
+  if (depth < 4) for (const inner of nested(cmd)) hits.push(...analyse(inner, cwd, cfg, depth + 1));
+  const def = cfg.project.default_branch;
+  const shared = (b) => b === def || /^(main|master|develop|release\/.+|production|staging)$/.test(b);
+  const wtRoot = worktreeRoot(cfg);
+  const safeRoots = [wtRoot, os.tmpdir(), '/tmp', '/private/tmp', path.join(cfg.__root, '.relay')];
+  const insideSafe = (p) => safeRoots.some((r) => isInside(p, r));
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd }).stdout.trim();
+  const top = git(['rev-parse', '--show-toplevel'], { cwd }).stdout.trim();
+
+  for (const seg of split(cmd)) {
+    const t = tokens(seg).filter((x) => !/^(sudo|env|command|time)$/.test(x) && !/^\w+=/.test(x));
+    if (t[0] === 'git') {
+      const rest = t.slice(1);
+      const sub = rest.find((x) => !x.startsWith('-')) ;
+      if (sub === 'push') {
+        if (rest.some((x) => x === '-f' || x === '--force' || x.startsWith('--force-with-lease') || /^\+[^\s:]+/.test(x))) hits.push('force-push rewrites remote history');
+        if (rest.includes('--mirror')) hits.push('push --mirror overwrites every remote ref');
+        const del = rest.includes('--delete') || rest.includes('-d');
+        for (const x of rest) { const b = x.replace(/^:/, '').replace(/^refs\/heads\//, ''); if ((del || x.startsWith(':')) && shared(b)) hits.push(`deleting shared branch ${b} on the remote`); }
+      }
+      if (sub === 'branch' && rest.some((x) => x === '-D' || x === '--force' || /^-[a-z]*D/.test(x))) {
+        const names = rest.filter((x) => !x.startsWith('-') && x !== 'branch');
+        if (names.some(shared)) hits.push(`force-deleting shared branch ${names.filter(shared).join(', ')}`);
+      }
+      if (sub === 'reset' && rest.includes('--hard') && (shared(branch) || !branch.startsWith('agent/'))) hits.push(`reset --hard on shared branch ${branch || '(detached)'}`);
+      if (sub === 'clean' && rest.some((x) => /^-[a-zA-Z]*f/.test(x)) && top && !isInside(top, wtRoot)) hits.push('git clean -f outside a worktree');
+      if (['filter-branch', 'filter-repo'].includes(sub) || (sub === 'update-ref' && rest.includes('-d'))) hits.push(`git ${sub} rewrites history`);
+    }
+    if (t[0] === 'gh' && t[1] === 'repo' && t[2] === 'delete') hits.push('deleting a repository');
+    if (t[0] === 'gh' && ['release', 'repo'].includes(t[1]) && t[2] === 'delete') hits.push(`gh ${t[1]} delete`);
+    if (t[0] === 'rm') {
+      const flags = t.slice(1).filter((x) => x.startsWith('-')).join('');
+      const targets = t.slice(1).filter((x) => !x.startsWith('-'));
+      if (/[rR]/.test(flags) || t.includes('--recursive')) {
+        for (const raw of targets) {
+          if (/\$|`/.test(raw) && !/^\$HOME/.test(raw)) { hits.push(`rm -r on unresolved path ${raw}`); continue; }
+          const expanded = raw.replace(/^~(?=\/|$)/, os.homedir()).replace(/^\$HOME/, os.homedir());
+          const clean = expanded.replace(/[*?[{].*$/, '');           // literal prefix before a glob
+          const abs = path.resolve(cwd, clean || '.');
+          const insideWt = top && isInside(top, wtRoot) && isInside(abs, top);
+          // regenerable build output inside the project is not a destructive act
+          if (REGENERABLE.has(path.basename(abs)) && isInside(abs, cfg.__root) && abs !== realish(cfg.__root)) continue;
+          // the main checkout wins over the temp-dir allowance (only .relay/ inside it is scratch)
+          const inMain = isInside(abs, cfg.__root) && !isInside(abs, path.join(cfg.__root, '.relay'));
+          if (abs === path.parse(abs).root || abs === os.homedir() || inMain || !(insideSafe(abs) || insideWt)) hits.push(`recursive delete outside the worktree root: ${raw}`);
+        }
+      }
+    }
+  }
+  if (/\b(drop\s+(table|database|schema)|truncate\s+table)\b/i.test(cmd)) hits.push('destructive SQL (DROP/TRUNCATE)');
+  for (const p of profilePatterns(cfg)) if (p.re.test(cmd)) hits.push(p.why);
+  return [...new Set(hits)];
+}
+
+guard('destructive-gate', (payload, cfg) => {
+  if (!cfg || payload.tool_name !== 'Bash') return allow();
+  const cmd = payload.tool_input?.command || '';
+  const analysable = cmd.replace(/RELAY_ALLOW_DESTRUCTIVE=(?:"[^"]*"|'[^']*'|\S+)/g, '');
+  const hits = analyse(analysable, payload.cwd || process.cwd(), cfg);
+  if (!hits.length) return allow();
+  if ((cfg.security?.destructive_allowlist || []).some((p) => toRegExp(p).test(cmd))) return allow();
+  const m = /RELAY_ALLOW_DESTRUCTIVE=(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(cmd);
+  const facts = m ? (m[1] ?? m[2] ?? m[3] ?? '') : '';
+  const has = (k) => new RegExp(`${k}\\s*=\\s*[^;]+\\S`).test(facts);
+  if (has('files') && has('rollback') && has('owner')) {
+    try { const d = path.join(cfg.__root, '.relay', 'logs'); fs.mkdirSync(d, { recursive: true }); fs.appendFileSync(path.join(d, 'destructive.log'), `${new Date().toISOString()} ALLOWED ${hits.join('; ')} :: ${facts}\n`); } catch { /* logging is best effort */ }
+    return allow();
+  }
+  deny(`Blocked destructive command (${hits.join('; ')}). Nothing was executed. If the owner explicitly asked for this, state the three facts and re-run with the prefix: RELAY_ALLOW_DESTRUCTIVE='files=<affected files>; rollback=<exact undo command>; owner=<who asked and when>' <command>. Otherwise use a non-destructive alternative.`);
+});

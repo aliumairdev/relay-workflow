@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+// relay-journal post <issue> --kind K (--text T | --from-file F) | read <issue> | check <issue> [--require plan,summary]
+// Keeps one living "Implementation log" comment per issue. Every agent working an issue posts to it.
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { appendEntry, readLog, checkLog, KINDS } from '../lib/journal.mjs';
+import { readState } from '../lib/state.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { kind: { type: 'string' }, text: { type: 'string' }, 'from-file': { type: 'string' }, agent: { type: 'string' }, runtime: { type: 'string' }, sha: { type: 'string' }, require: { type: 'string' } });
+  const [cmd, arg] = args;
+  const issue = Number(arg);
+  if (!['post', 'read', 'check'].includes(cmd) || !issue) throw new RelayError(`usage: relay-journal post|read|check <issue> (kinds: ${KINDS.join(', ')})`, EXIT.INVALID);
+  const { cfg, cp } = ctx();
+
+  if (cmd === 'read') {
+    const log = readLog(cp, issue);
+    out(flags, log, log.entries.map((e) => `#${e.n} ${e.at} ${e.agent_id} ${e.kind}: ${e.text}`).join('\n') || 'no journal entries');
+    return EXIT.OK;
+  }
+  if (cmd === 'check') {
+    const req = (flags.require ? flags.require.split(',') : cfg.journal?.require || ['plan', 'summary']).map((s) => s.trim()).filter(Boolean);
+    const r = checkLog(readLog(cp, issue), req);
+    out(flags, { ...r, required: req }, r.ok ? `journal ok (${r.entries} entries)` : `journal incomplete: missing ${r.missing.join(', ')}`);
+    return r.ok ? EXIT.OK : EXIT.INVALID;
+  }
+
+  const text = flags['from-file'] ? fs.readFileSync(flags['from-file'], 'utf8') : flags.text;
+  if (!flags.kind || !text) throw new RelayError('usage: relay-journal post <issue> --kind <kind> (--text "..." | --from-file f)', EXIT.INVALID);
+  const claim = readState(cfg).claims.find((c) => c.issue === issue);
+  const sha = flags.sha || git(['rev-parse', '--short=10', 'HEAD']).stdout.trim() || null;
+  const entry = { kind: flags.kind, text, agent_id: flags.agent || process.env.RELAY_AGENT_ID || claim?.agent_id || 'unknown', runtime: flags.runtime || claim?.runtime || null, head_sha: sha };
+  if (flags['dry-run']) { out(flags, { dry_run: true, entry }); return EXIT.OK; }
+  const e = appendEntry(cp, issue, entry);
+  out(flags, e, `journal #${e.n} (${e.kind}) added to #${issue}`);
+  return EXIT.OK;
+});

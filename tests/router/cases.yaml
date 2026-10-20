@@ -1,0 +1,157 @@
+# Table-driven router tests (AGENT_HANDOFF 6.2). Add a row for every routing bug.
+# expect: dotted paths into the decide() result; config_patch deep-merges over `config` (arrays replace).
+config:
+  tiers:
+    T0: {name: docs,        claude: m-haiku,  codex: c-mini,    effort: medium}
+    T1: {name: implement,   claude: m-sonnet, codex: c-default, effort: medium}
+    T2: {name: high-risk,   claude: m-opus,   codex: c-top,     effort: medium}
+    T3: {name: exceptional, claude: m-fable,  codex: null,      effort: medium}
+  runtimes:
+    claude: {enabled: true, models: {T0: m-haiku, T1: m-sonnet, T2: m-opus, T3: m-fable}}
+    codex:  {enabled: true, models: {T0: c-mini, T1: c-default, T2: c-top}}
+  runtime_policy:
+    default: any
+    rules:
+      - {when: {labels_any: ["type:refactor"]}, prefer: codex}
+      - {when: {labels_any: ["area:design"]}, prefer: claude}
+    fallback_order: [claude, codex]
+  review: {cross_runtime: true}
+  routing:
+    allow_high_effort: false
+    default_effort: medium
+    packet_max_words: 500
+    risk:
+      thresholds: {second_reviewer: 40, senior: 80}
+      hard_senior_paths: ["sections/*cart*", "snippets/*cart*"]
+      signals:
+        - {kind: path,  globs: ["snippets/structured-data-*", "snippets/compat-*", "assets/nx-compat*", "config/settings_schema.json"], points: 40}
+        - {kind: label, any: ["area:accessibility"], points: 30}
+        - {kind: label, any: ["risk:high"], points: 50}
+        - {kind: size,  files_gt: 15, lines_gt: 600, points: 15}
+        - {kind: size,  files_gt: 40, lines_gt: 1500, points: 30}
+        - {kind: rework, rounds_gte: 2, points: 20}
+        - {kind: rework, rounds_gte: 3, points: 35}
+        - {kind: proof_failed, points: 30}
+        - {kind: paths_only, globs: ["docs/**", "tests/**"], points: -30}
+    overrides:
+      labels: {"route:T2": {tier: T2}}
+  budgets:
+    tier_share_max: {T2: 0.04, T3: 0.01, top_combined: 0.05}
+    max_tokens_per_task: {T0: 150000, T1: 600000, T2: 250000, T3: 250000}
+
+cases:
+  - id: "1"
+    name: implement with design labels on a css path -> T1, medium, no packet
+    input: {class: implement, labels: [type:feature, area:design], paths: [assets/base.css], lines: 80}
+    expect: {decision.tier: T1, decision.model: m-sonnet, decision.effort: medium, decision.packet_required: false, decision.runtime: claude, overridden: false}
+  - id: "2"
+    name: docs-only routine review -> score floors at 0, T1 single reviewer
+    input: {class: routine_review, paths: [docs/merchant/x.md], lines: 40}
+    expect: {risk.score: 0, decision.tier: T1, decision.second_reviewer: false, decision.packet_required: false}
+  - id: "3"
+    name: compat path routine review -> 40, T1 plus second reviewer
+    input: {class: routine_review, paths: [snippets/compat-fit.liquid], lines: 120}
+    expect: {risk.score: 40, decision.tier: T1, decision.second_reviewer: true, decision.packet_required: false}
+  - id: "4"
+    name: cart section is a hard senior path -> T2 with packet
+    input: {class: routine_review, paths: [sections/main-cart.liquid], lines: 30}
+    expect: {decision.tier: T2, decision.model: m-opus, decision.packet_required: true, "risk.hard_rules.0.kind": hard_senior_path}
+  - id: "5"
+    name: accessibility label + 700 lines -> 45, T1 plus second reviewer
+    input: {class: routine_review, labels: [area:accessibility], paths: [assets/nx-modal.js], lines: 700}
+    expect: {risk.score: 45, decision.tier: T1, decision.second_reviewer: true}
+  - id: "5b"
+    name: same, but modal path configured as hard senior -> T2
+    config_patch: {routing: {risk: {hard_senior_paths: ["sections/*cart*", "snippets/*cart*", "assets/nx-modal*"]}}}
+    input: {class: routine_review, labels: [area:accessibility], paths: [assets/nx-modal.js], lines: 700}
+    expect: {decision.tier: T2, decision.packet_required: true}
+  - id: "6"
+    name: compat 40 + size 15 + rework 20 + risk:high 50 caps at 100 -> T2 packet
+    input: {class: routine_review, labels: [risk:high], paths: [snippets/compat-fit.liquid], files: 20, lines: 100, rework_rounds: 2}
+    expect: {risk.score: 100, decision.tier: T2, decision.packet_required: true, decision.pre_review_tier: T1}
+  - id: "7"
+    name: docs class -> T0
+    input: {class: docs, labels: [type:docs]}
+    expect: {decision.tier: T0, decision.model: m-haiku}
+  - id: "8a"
+    name: plan with low novelty -> T1
+    input: {class: plan, novelty: low}
+    expect: {decision.tier: T1}
+  - id: "8b"
+    name: plan with high novelty -> T2
+    input: {class: plan, novelty: high}
+    expect: {decision.tier: T2, decision.packet_required: true}
+  - id: "9a"
+    name: debug real env attempt 1 -> T1
+    input: {class: debug_real_env, attempt: 1}
+    expect: {decision.tier: T1}
+  - id: "9b"
+    name: debug real env attempt 3 with no root cause -> T2
+    input: {class: debug_real_env, attempt: 3, root_cause_known: false}
+    expect: {decision.tier: T2}
+  - id: "10"
+    name: audit of a release candidate -> T2 packet
+    input: {class: implement, release_candidate: true}
+    expect: {task_class: audit, decision.tier: T2, decision.packet_required: true}
+  - id: "11a"
+    name: conflict resolution, resolver exit 2 -> T1 agent
+    input: {class: conflict_resolution, resolver_exit: 2}
+    expect: {decision.agent_needed: true, decision.tier: T1}
+  - id: "11b"
+    name: conflict resolution, resolver exit 0 -> no agent
+    input: {class: conflict_resolution, resolver_exit: 0}
+    expect: {decision.agent_needed: false, decision.tier: null}
+  - id: "12"
+    name: route:T2 label overrides, ledger notes the override
+    input: {class: implement, labels: ["route:T2"]}
+    expect: {decision.tier: T2, overridden: true, "override.source": "label route:T2"}
+    expect_match: {ledger_note: "override"}
+  - id: "13"
+    name: high-risk review requested but T2 share is 5.1% -> denied with T1 + owner approval suggestion
+    input: {class: high_risk_review, history: {tier_share: {T1: 0.9, T2: 0.051}}}
+    expect: {denied: true, budget.cap_ok: false, decision.fallback.tier: T1, decision.fallback.requires_owner_approval: true, decision.fallback.second_reviewer: true}
+  - id: "13b"
+    name: T2 share 3% is below the cap -> admitted
+    input: {class: high_risk_review, history: {tier_share: {T1: 0.95, T2: 0.03}}}
+    expect: {denied: null, budget.cap_ok: true, decision.tier: T2}
+  - id: "14"
+    name: two previous failed reviews raise the tier one step
+    input: {class: implement, failed_reviews: 2}
+    expect: {decision.tier: T2, escalation_from: T1}
+  - id: "15"
+    name: caller asks for high effort while allow_high_effort is false -> medium
+    input: {class: implement, requested_effort: high}
+    expect: {decision.effort: medium}
+  - id: "16"
+    name: agent:codex implement uses the codex model map
+    input: {class: implement, labels: [agent:codex]}
+    expect: {decision.runtime: codex, decision.model: c-default}
+  - id: "17"
+    name: review of a codex-built PR with cross_runtime goes to claude
+    input: {class: routine_review, implementer_runtime: codex, paths: [src/a.js], lines: 10}
+    expect: {decision.runtime: claude, decision.same_runtime: false}
+  - id: "18"
+    name: same with only codex enabled -> same_runtime flag, different instance
+    config_patch: {runtimes: {claude: {enabled: false}}}
+    input: {class: routine_review, implementer_runtime: codex, paths: [src/a.js], lines: 10}
+    expect: {decision.runtime: codex, decision.same_runtime: true}
+  - id: "19a"
+    name: failed proof (30) + compat path (40) = 70 -> T1 plus second reviewer
+    input: {class: routine_review, proof_failed: true, paths: [snippets/compat-fit.liquid], lines: 50}
+    expect: {risk.score: 70, decision.tier: T1, decision.second_reviewer: true}
+  - id: "19b"
+    name: plus rework 2 (20) = 90 -> T2
+    input: {class: routine_review, proof_failed: true, rework_rounds: 2, paths: [snippets/compat-fit.liquid], lines: 50}
+    expect: {risk.score: 90, decision.tier: T2, decision.packet_required: true}
+  - id: "20"
+    name: triage batch of 12 issues -> T0 low effort
+    input: {class: triage, batch: 12}
+    expect: {decision.tier: T0, decision.effort: low}
+  - id: "21"
+    name: refactor label prefers codex through runtime_policy rules
+    input: {class: implement, labels: [type:refactor]}
+    expect: {decision.runtime: codex}
+  - id: "22"
+    name: a T3 decision on a runtime with no T3 model moves to the runtime that has one
+    input: {class: debug_real_env, attempt: 3, t2_attempts_unresolved: true, cross_system: true, labels: [agent:codex]}
+    expect: {decision.tier: T3, decision.runtime: claude, decision.model: m-fable}

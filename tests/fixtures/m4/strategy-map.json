@@ -1,0 +1,6 @@
+[
+  { "match": "**/*.md", "strategy": "union" },
+  { "match": "templates/*.json", "strategy": "json-deep-merge", "order_keys": ["order"] },
+  { "match": "snippets/importmap.liquid", "strategy": "line-union" },
+  { "match": "locales/*.json", "strategy": "keep-both" }
+]

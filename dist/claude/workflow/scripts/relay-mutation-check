@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// relay-mutation-check [--ref HEAD] [--only name]   runs honesty.mutation_checks from workflow.yaml
+// Each check {name, test, mutate}: test passes on the clean tree, fails after `mutate` breaks the guard.
+// Exit 0 every guard is killed | 4 a guard survived / baseline failed / check broken | 3 no checks configured
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { runMutationChecks } from '../lib/mutation.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { ref: { type: 'string' }, only: { type: 'string' } });
+  const { cfg } = ctx();
+  let checks = cfg.honesty?.mutation_checks || [];
+  if (flags.only) checks = checks.filter((c) => c.name === flags.only);
+  if (!checks.length) throw new RelayError('no honesty.mutation_checks configured in workflow.yaml', EXIT.INVALID);
+  for (const c of checks) if (!c.name || !c.test || !c.mutate) throw new RelayError(`mutation check needs name, test and mutate: ${JSON.stringify(c)}`, EXIT.INVALID);
+  if (flags['dry-run']) { out(flags, { dry_run: true, checks: checks.map((c) => c.name) }); return EXIT.OK; }
+  const res = runMutationChecks(cfg, checks, { ref: flags.ref || 'HEAD' });
+  const bad = res.filter((r) => r.status !== 'killed');
+  out(flags, { ok: !bad.length, results: res }, res.map((r) => `${r.status === 'killed' ? 'PASS' : 'FAIL'} ${r.name}: ${r.detail}`).join('\n'));
+  return bad.length ? EXIT.GATE_FAILED : EXIT.OK;
+});

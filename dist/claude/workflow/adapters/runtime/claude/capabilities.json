@@ -1,0 +1,10 @@
+{
+  "runtime": "claude",
+  "tools": ["subagents", "hooks", "send_message", "worktree-isolation"],
+  "strengths": ["orchestration", "parallel-subagents", "ui-design-gate", "review"],
+  "resume": "send_message",
+  "headless_cmd": "claude -p",
+  "effort_control": "env:CLAUDE_CODE_EFFORT_LEVEL",
+  "usage_reporting": "estimated",
+  "dispatch": "In a Claude session the orchestrator launches a subagent (Agent tool, subagent_type from agents/*.md). Headless dispatch through relay-codex-dispatch works when runtimes.claude.exec_cmd is set (for example 'claude -p')."
+}

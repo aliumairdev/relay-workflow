@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "claim",
+  "type": "object",
+  "required": [
+    "type",
+    "issue",
+    "agent_id",
+    "runtime",
+    "branch",
+    "lease_minutes",
+    "claimed_at",
+    "nonce"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "claim"
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "runtime": {
+      "type": "string"
+    },
+    "role": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "lease_minutes": {
+      "type": "integer"
+    },
+    "claimed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "owned_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nonce": {
+      "type": "string"
+    },
+    "ack_handoff": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lease_until": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    }
+  }
+}

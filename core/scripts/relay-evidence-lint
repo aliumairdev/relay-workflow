@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+// relay-evidence-lint (--pr N | --issue N | --file F | --text T) [--kind pr|comment]
+// Fails (exit 3) when a success claim has no evidence or a PR lacks a NOT_VERIFIED section.
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { lint, lintHandoff } from '../lib/evidence.mjs';
+import { handoffsOf } from '../lib/handoff.mjs';
+import { readLog } from '../lib/journal.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { pr: { type: 'string' }, issue: { type: 'string' }, file: { type: 'string' }, text: { type: 'string' }, kind: { type: 'string' } });
+  const findings = [];
+  let scanned = 0;
+  if (flags.file || flags.text !== undefined) {
+    const text = flags.file ? fs.readFileSync(flags.file, 'utf8') : flags.text;
+    findings.push(...lint(text, { kind: flags.kind || 'pr' }).map((f) => ({ ...f, where: flags.file || 'text' }))); scanned++;
+  }
+  if (flags.pr || flags.issue) {
+    const { cp } = ctx();
+    if (flags.pr) { findings.push(...lint(cp.getPR(Number(flags.pr)).body, { kind: 'pr' }).map((f) => ({ ...f, where: `PR #${flags.pr} body` }))); scanned++; }
+    if (flags.issue) {
+      const n = Number(flags.issue);
+      for (const h of handoffsOf(cp.listComments(n))) { findings.push(...lintHandoff(h).map((f) => ({ ...f, where: `handoff ${h.sha}` }))); scanned++; }
+      for (const e of readLog(cp, n).entries.filter((x) => x.kind === 'summary')) { findings.push(...lint(e.text, { kind: 'comment' }).map((f) => ({ ...f, where: `journal #${e.n} (summary)` }))); scanned++; }
+    }
+  }
+  if (!scanned) throw new RelayError('usage: relay-evidence-lint (--pr N | --issue N | --file F | --text T)', EXIT.INVALID);
+  out(flags, { ok: !findings.length, findings }, findings.length ? findings.map((f) => `${f.where}: [${f.rule}] ${f.message}`).join('\n') : 'evidence lint passed');
+  return findings.length ? EXIT.INVALID : EXIT.OK;
+});

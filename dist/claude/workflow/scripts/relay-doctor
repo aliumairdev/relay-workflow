@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+// relay-doctor [--fix] [--json] [--root DIR]   exit 0 all pass | 1 warnings | 3 failures
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { parse, out, run } from '../lib/cli.mjs';
+import { doctor } from '../lib/doctor.mjs';
+
+const ICON = { pass: 'PASS', warn: 'WARN', fail: 'FAIL', skip: 'skip' };
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { fix: { type: 'boolean' }, root: { type: 'string' } });
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const root = path.resolve(flags.root || (top.status === 0 ? top.stdout.trim() : process.cwd()));
+  const r = await doctor(root, { fix: !!flags.fix });
+  out(flags, r, `${r.checks.map((c) => `${ICON[c.status]}  ${c.id}: ${c.message}${c.status !== 'pass' && c.status !== 'skip' && c.fix && !c.fixed ? `\n      fix: ${c.fix}` : ''}`).join('\n')}\n\ndoctor: ${r.status.toUpperCase()}`);
+  return r.exit;
+});

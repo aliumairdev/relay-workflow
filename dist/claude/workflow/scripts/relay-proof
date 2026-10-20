@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// relay-proof [--stage pre-merge|post-merge|release] [--ref <sha|branch>] [--suite quick|full] [--issue N] [--pr N] [--no-issues]
+// Runs the profile's proof steps against the scoped dev target; writes harness/proof/<date>/<ref>/summary.json.
+// Exit: 0 pass | 4 platform errors | 5 target unavailable (items NOT_VERIFIED) | 6 render errors | 8 refused (scope)
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { runProof, writeSummary, STAGES } from '../lib/proof.mjs';
+import { raiseOnProofFailure } from '../lib/proofissues.mjs';
+import { EXIT, RelayError } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { stage: { type: 'string' }, ref: { type: 'string' }, suite: { type: 'string' }, issue: { type: 'string' }, pr: { type: 'string' }, 'no-issues': { type: 'boolean' } });
+  const stage = flags.stage || 'pre-merge', suite = flags.suite || 'quick';
+  if (!STAGES[stage] || !['quick', 'full'].includes(suite)) throw new RelayError('usage: relay-proof [--stage pre-merge|post-merge|release] [--ref r] [--suite quick|full] [--no-issues]', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+  const ref = flags.ref || 'HEAD';
+  if (flags['dry-run']) { out(flags, { dry_run: true, stage, ref, suite }); return EXIT.OK; }
+  const result = await runProof(cfg, { stage, ref, suite });
+  const { dir, file } = writeSummary(cfg, result, { ref });
+  result.summary = file;
+  if ([EXIT.GATE_FAILED, EXIT.RENDER].includes(result.exit) && !flags['no-issues']) {
+    result.bug_issues = await raiseOnProofFailure(cfg, cp, result, { ref, issue: flags.issue && Number(flags.issue), pr: flags.pr && Number(flags.pr), summaryPath: file });
+  }
+  const bad = result.items.filter((i) => i.status !== 'pass');
+  out(flags, result, `proof ${stage} @ ${ref}: exit ${result.exit} — ${result.items.length - bad.length}/${result.items.length} passed${bad.length ? `\n${bad.map((i) => `  ${i.status.toUpperCase()} ${i.name}: ${i.evidence.split('\n')[0]}`).join('\n')}` : ''}\nsummary: ${file}`);
+  return result.exit;
+});

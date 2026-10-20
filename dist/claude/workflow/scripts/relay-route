@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+// relay-route <issue|pr> [--class c] [--explain] [--json] [--tier T --reason "text"] [--runtime rt] [--propose]
+//   inputs (default: read from GitHub/git): --paths a,b --lines N --files N --implementer rt --attempt N --novelty high
+//   --resolver-exit N --effort e --proof-failed --from-failed-proof --release-candidate --rework N --failed-reviews N
+// Exit: 0 decided, 3 invalid config/input, 8 denied by budget/cap (decision.fallback suggests the alternative).
+import fs from 'node:fs';
+import path from 'node:path';
+import YAML from 'yaml';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx, actorClass } from '../lib/ctx.mjs';
+import { decide, explain, propose } from '../lib/router.mjs';
+import * as ledger from '../lib/ledger.mjs';
+import { changeLabels } from '../lib/labelops.mjs';
+import { extract } from '../lib/markers.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), {
+    class: { type: 'string' }, explain: { type: 'boolean' }, tier: { type: 'string' }, reason: { type: 'string' }, runtime: { type: 'string' }, propose: { type: 'boolean' },
+    paths: { type: 'string' }, lines: { type: 'string' }, files: { type: 'string' }, implementer: { type: 'string' }, attempt: { type: 'string' }, novelty: { type: 'string' },
+    'resolver-exit': { type: 'string' }, effort: { type: 'string' }, 'proof-failed': { type: 'boolean' }, 'from-failed-proof': { type: 'boolean' }, 'release-candidate': { type: 'boolean' },
+    rework: { type: 'string' }, 'failed-reviews': { type: 'string' }, 'root-cause-known': { type: 'boolean' }, since: { type: 'string' },
+  });
+  const { cfg, cp } = ctx();
+  if (cfg.routing?.include) {
+    const f = path.resolve(cfg.__root, cfg.routing.include);
+    if (!fs.existsSync(f)) throw new RelayError(`routing.include file not found: ${f}`, EXIT.INVALID);
+    cfg.routing = { ...YAML.parse(fs.readFileSync(f, 'utf8')), ...Object.fromEntries(Object.entries(cfg.routing).filter(([k]) => k !== 'include')) };
+  }
+  const rows = ledger.readAll(cfg);
+  if (flags.propose) {
+    const p = propose(rows, cfg);
+    out(flags, { proposals: p }, p.length ? p.map((x) => `${x.kind}: ${x.task_class || (x.issues || []).join(',')} — ${x.evidence}`).join('\n') : 'no routing proposals');
+    return EXIT.OK;
+  }
+  const n = Number(args[0]);
+  if (!n && !flags.class) throw new RelayError('usage: relay-route <issue|pr> [--class c] [--explain] [--json] | --propose', EXIT.INVALID);
+  const num = (v) => (v === undefined ? undefined : Number(v));
+
+  let labels = [], target = null, isPr = false, paths = [], files, lines, rework = 0;
+  if (n) {
+    const item = cp.getIssue(n);
+    isPr = !!item.pull_request; labels = item.labels;
+    target = { kind: isPr ? 'pr' : 'issue', number: n };
+    if (isPr) {
+      rework = extract(cp.listComments(n).map((c) => c.body).join('\n'), 'verdict').filter((m) => m.data.result === 'CHANGES').length;
+      try {
+        const pr = cp.getPR(n), ref = pr.head?.ref || pr.pull_request?.head?.ref;
+        const g = git(['diff', '--numstat', `origin/${cfg.project.default_branch}...origin/${ref}`], { cwd: cfg.__root });
+        if (g.code === 0) {
+          const rowsN = g.stdout.split('\n').filter(Boolean).map((l) => l.split('\t'));
+          paths = rowsN.map((r) => r[2]); files = rowsN.length; lines = rowsN.reduce((s, r) => s + (Number(r[0]) || 0) + (Number(r[1]) || 0), 0);
+        }
+      } catch { /* diff unavailable: score from labels and flags only */ }
+    }
+  }
+  if (flags.paths) { paths = flags.paths.split(',').filter(Boolean); files = files ?? paths.length; }
+  const { share, enough } = ledger.tierShare(rows, cfg.budgets?.tier_share_min_runs ?? 10);
+  const input = {
+    target, class: flags.class || (isPr ? 'routine_review' : 'implement'), labels, paths,
+    files: num(flags.files) ?? files, lines: num(flags.lines) ?? lines, rework_rounds: num(flags.rework) ?? rework, failed_reviews: num(flags['failed-reviews']) ?? rework,
+    proof_failed: !!flags['proof-failed'], from_failed_proof: !!flags['from-failed-proof'], release_candidate: !!flags['release-candidate'],
+    attempt: num(flags.attempt), novelty: flags.novelty, resolver_exit: num(flags['resolver-exit']), requested_effort: flags.effort, root_cause_known: !!flags['root-cause-known'],
+    implementer_runtime: flags.implementer, history: { tier_share: enough ? share : {} },
+  };
+  if (flags.tier) {
+    if (!flags.reason) throw new RelayError('--tier override needs --reason "text"', EXIT.INVALID);
+    input.override = { tier: flags.tier, reason: flags.reason, by: actorClass() };
+  }
+  if (flags.runtime) labels.includes(`agent:${flags.runtime}`) || input.labels.push(`agent:${flags.runtime}`);
+  const result = decide(input, cfg);
+
+  if (flags.tier && n && !flags['dry-run']) {
+    changeLabels(cp, cfg, n, { add: [`route:${flags.tier}`], actor: actorClass() });
+    await ledger.append(cfg, { run_id: `override-${n}`, runtime: result.decision.runtime, tier: flags.tier, task_class: result.task_class, issue: isPr ? null : n, pr: isPr ? n : null, outcome: 'escalated', reason: `override: ${flags.reason}`.slice(0, 200) });
+  }
+  out(flags, result, flags.explain ? explain(result) : `${result.decision.tier ?? 'no agent'} ${result.decision.model ?? ''} ${result.decision.runtime}${result.decision.second_reviewer ? ' +second reviewer' : ''}${result.decision.packet_required ? ' +packet' : ''}${result.denied ? ' DENIED' : ''}`.trim());
+  return result.denied ? EXIT.DENIED : EXIT.OK;
+});

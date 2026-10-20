@@ -1,0 +1,6 @@
+{
+  "node": "20.0.0",
+  "git": "2.35",
+  "gh": "2.40",
+  "note": "Initial assumptions from PLUGIN_SPEC 14; to be confirmed against the sandbox CI matrix and recorded per runtime version."
+}

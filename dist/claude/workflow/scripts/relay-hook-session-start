@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+// SessionStart: put the plugin scripts on PATH for the session and print the recovery summary.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { guard, allow, emit } from '../lib/hooklib.mjs';
+import { controlPlane } from '../adapters/control-plane/github.mjs';
+import { gather, renderBrief } from '../lib/status.mjs';
+
+guard('session-start', (payload, cfg) => {
+  const scripts = path.dirname(fileURLToPath(import.meta.url));
+  if (process.env.CLAUDE_ENV_FILE) {
+    try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export PATH="${scripts}:$PATH"\n`); } catch { /* best effort */ }
+  }
+  if (!cfg) return allow();
+  let text;
+  try { text = renderBrief(gather(cfg, controlPlane(cfg))); } catch (e) { text = `Relay project detected; status unavailable (${String(e.message).split('\n')[0]}). Run /workflow:doctor.`; }
+  emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+  process.exit(0);
+});

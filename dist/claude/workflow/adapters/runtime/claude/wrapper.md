@@ -1,0 +1,1 @@
+RUNTIME: Claude Code. Use your assigned subagent type; keep effort at the level in your brief. When resumed with SendMessage, run `pwd` and `relay-worktree verify` first. Long tool runs: let the wrapper script heartbeat; do not poll with `pgrep -f`.

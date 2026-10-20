@@ -1,0 +1,25 @@
+# Lessons registry (ARCHITECTURE section 14). form: lint | skill | script | process. A lint rule id names a module in checks/.
+version: 1
+lessons:
+  - { id: L1, class: "Liquid capture keeps whitespace; comparisons and numeric parsing on captured strings fail on the real platform while a trimming harness passes", rule: "never compare or compute on a captured string without | strip", form: lint, lint: liquid-capture-strip, evidence: "PRs #401/#397, #380/#374 (metric bars never drew on the store)" }
+  - { id: L2, class: "Theme block types: @theme/@app blocks must be declared and rendered through the platform block mechanism", rule: "validate that every block type exists in the section schema or is @theme/@app allowed", form: lint, lint: null, evidence: "NOT_VERIFIED: fixing PR not identified; owner named the class" }
+  - { id: L3, class: "Platform block wrappers break direct-child selectors, grid spans and carousel slide discovery", rule: "no > child combinators on block containers; use data attributes on the block root", form: lint, lint: block-wrapper-child-combinator, evidence: "PR #248, commit ed87271, PR #392" }
+  - { id: L4, class: "Filters on missing values yield blank output, leaving empty wrappers and headings", rule: "guard with if value != blank after filtering, before rendering the wrapper", form: lint, lint: liquid-blank-after-filter, evidence: "empty-block fixes in ed87271; QA #301" }
+  - { id: L5, class: "Schema constraints enforced only by the platform: range settings need >= 3 steps and a default on a step; one link_list setting per section", rule: "validate settings offline", form: lint, lint: [schema-range-step, schema-link-list-once], evidence: "PRs #159, #131" }
+  - { id: L6, class: "Braces inside quoted Liquid strings, external_video_url on non-media objects, module registration one per line in the import map", rule: "liquid-braces lint; import map resolver", form: lint, lint: liquid-braces-in-strings, evidence: "PR #137" }
+  - { id: L7, class: "A harness approximates but never proves the platform", rule: "real-environment proof stage; store-dependent checks stay NOT_VERIFIED until proven", form: process, lint: null, evidence: "QA gates section 1; #102" }
+  - { id: L8, class: "Shared worktree collisions", rule: "one worktree per claim; hook verifies branch ownership", form: script, lint: null, evidence: "shared probe worktree in four scripts" }
+  - { id: L9, class: "Self-matching pgrep wait loops", rule: "relay-wait; brief-lint hook", form: script, lint: null, evidence: "orchestrator experience" }
+  - { id: L10, class: "Auto-merge conflict gaps", rule: "resolver registry with fixtures", form: script, lint: null, evidence: "resolve.mjs then resolve2.mjs; merge-stack; fixmerge" }
+  - { id: L11, class: "Rate limits from many parallel verbose agents", rule: "token rules in every brief; concurrency cap", form: script, lint: null, evidence: "owner token directive" }
+  - { id: L12, class: "Machine overload causes false failures", rule: "load governor, heavy-slot semaphore, suspect-load re-run", form: script, lint: null, evidence: "load 150-200" }
+  - { id: L13, class: "Top tier used for every PR review", rule: "router with risk score and share cap", form: script, lint: null, evidence: "routing v2 directive, PR #144" }
+  - { id: L14, class: "Visual rejection after code; design came last", rule: "design-before-code gate", form: skill, lint: null, evidence: "design-before-code.md" }
+  - { id: L15, class: "Remote CI on every PR was slow and noisy", rule: "relay-ci as the PR gate; remote CI on the default branch only", form: script, lint: null, evidence: "PR #240" }
+  - { id: L16, class: "Unanswered bot review comments shipped", rule: "relay-bot-gate", form: script, lint: null, evidence: "owner instruction" }
+  - { id: L17, class: "Shared files conflict (locales, settings schema, import map)", rule: "declared ownership, append-only rule, resolvers", form: process, lint: null, evidence: "ADR-0004" }
+  - { id: L18, class: "Over-claiming PASS instead of NOT_VERIFIED", rule: "evidence lint; verdict vocabulary", form: lint, lint: null, evidence: "QA gates; blockers dir" }
+  - { id: L19, class: "Tests that pass for the wrong reason", rule: "mutation check for guard tests", form: script, lint: null, evidence: "negative fixtures prove each rule fails" }
+  - { id: L20, class: "Design drift (pill/radius misuse) found late", rule: "design-lint rules with fixtures", form: lint, lint: null, evidence: "handoff #163" }
+  - { id: L21, class: "UI audit found many P1 issues after many merges", rule: "post-merge QA agent and scheduled audits (light/dark at 375/1440)", form: process, lint: null, evidence: "audit2-2026-10-19" }
+  - { id: L22, class: "Data population coupled with theme work, done ad hoc", rule: "idempotent scripted step with RESULT file and undo note", form: process, lint: null, evidence: "populate/step*.py, RESULT*.md" }

@@ -1,0 +1,15 @@
+{
+  "name": "relay-marketplace",
+  "owner": {
+    "name": "owner"
+  },
+  "description": "Relay: multi-agent build workflow plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "workflow",
+      "source": "./dist/claude/workflow",
+      "description": "Multi-agent build workflow",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// relay-report [--since 7d] [--json] [--merged 12,13] [--write]   cost per merged PR, tier mix vs caps, rework, escalations, rate limits
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import * as ledger from '../lib/ledger.mjs';
+import { buildReport, renderMarkdown } from '../lib/report.mjs';
+import { now, iso } from '../lib/clock.mjs';
+import { EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { since: { type: 'string' }, merged: { type: 'string' }, write: { type: 'boolean' } });
+  const { cfg } = ctx();
+  const rows = ledger.readAll(cfg, { sinceMs: ledger.parseSince(flags.since) });
+  const rep = buildReport(rows, cfg, { merged: (flags.merged || '').split(',').filter(Boolean).map(Number) });
+  const md = renderMarkdown(rep, { since: flags.since });
+  if (flags.write && !flags['dry-run']) {
+    const dir = path.join(cfg.__root, 'harness', 'reports'); fs.mkdirSync(dir, { recursive: true });
+    const stamp = iso(now()).slice(0, 10);
+    fs.writeFileSync(path.join(dir, `usage-${stamp}.md`), md); fs.writeFileSync(path.join(dir, `usage-${stamp}.json`), JSON.stringify(rep, null, 2) + '\n');
+  }
+  out(flags, rep, md.trimEnd());
+  return EXIT.OK;
+});

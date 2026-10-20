@@ -1,0 +1,92 @@
+#!/usr/bin/env node
+// relay-claim <issue> --agent <id> --runtime <rt> [--role N] [--owned "g,g"] [--ack-handoff sha] [--lease-min 30] [--slug s]
+// Exit 0 claimed; 7 refused; 9 control-plane error.
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { analyze, claimBody, newNonce, slugify, findOverlap, leaseUntil } from '../lib/claims.mjs';
+import { handoffsOf } from '../lib/handoff.mjs';
+import { changeLabels } from '../lib/labelops.mjs';
+import { readState, updateState } from '../lib/state.mjs';
+import { branchName } from '../lib/worktree.mjs';
+import { stateOf } from '../lib/labels.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import { now, iso } from '../lib/clock.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const refuse = (m) => { throw new RelayError(`refused: ${m}`, EXIT.REFUSED); };
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { agent: { type: 'string' }, runtime: { type: 'string' }, role: { type: 'string' }, owned: { type: 'string' }, 'ack-handoff': { type: 'string' }, 'lease-min': { type: 'string' }, slug: { type: 'string' } });
+  const issueNo = Number(args[0]);
+  const agent = flags.agent || process.env.RELAY_AGENT_ID, runtime = flags.runtime;
+  if (!issueNo || !agent || !runtime) throw new RelayError('usage: relay-claim <issue> --agent <id> --runtime <rt> [--role N] [--owned "g,g"] [--ack-handoff sha] [--lease-min N]', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+  if (cfg.runtimes && cfg.runtimes[runtime] && cfg.runtimes[runtime].enabled === false) refuse(`runtime ${runtime} is disabled in workflow.yaml`);
+
+  const issue = cp.getIssue(issueNo);
+  if (issue.pull_request) refuse(`#${issueNo} is a pull request`);
+  if (issue.state !== 'open') refuse(`#${issueNo} is closed`);
+  const comments = cp.listComments(issueNo);
+  let a = analyze(comments);
+  const state = stateOf(issue.labels)[0];
+  const handoffLabel = issue.labels.find((l) => l.startsWith('handoff:'));
+  const handoffs = handoffsOf(comments), latest = handoffs.at(-1) || null;
+
+  // Precondition: claimable state
+  const toMe = handoffLabel === `handoff:to-${runtime}`;
+  let fromState = state;
+  if (state === 'claimed' || state === 'in-progress') {
+    if (a.valid) refuse(`#${issueNo} already claimed by ${a.valid.claim.agent_id} (${a.valid.claim.runtime}) until ${a.valid.lease_until}`);
+    // lease expired but not yet swept: treat as ready (sweep note is posted by relay-lease)
+    fromState = 'ready';
+  } else if (state === 'changes-requested' || state === 'review') {
+    if (!toMe) refuse(`#${issueNo} is state:${state}; only a handoff addressed to ${runtime} can be claimed`);
+  } else if (state !== 'ready') refuse(`#${issueNo} is not claimable (state:${state ?? 'none'})`);
+
+  // Owner label
+  const owner = issue.labels.filter((l) => /^agent:(claude|codex|any|gemini)$/.test(l));
+  if (owner.length && !owner.includes(`agent:${runtime}`) && !owner.includes('agent:any')) refuse(`owner label ${owner.join(',')} does not allow runtime ${runtime}`);
+
+  // Handoff acknowledgement
+  if (handoffLabel) {
+    if (!toMe) refuse(`handoff is addressed to ${handoffLabel.replace('handoff:to-', '')}, not ${runtime}`);
+    if (!latest) refuse(`${handoffLabel} is set but no relay:handoff comment was found`);
+    if (flags['ack-handoff'] !== latest.sha) refuse(`handoff not acknowledged: read the latest handoff and pass --ack-handoff ${latest.sha}`);
+  }
+
+  // Owned-path overlap
+  const owned = (flags.owned || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const overlap = findOverlap(owned, readState(cfg).claims, cfg, issueNo);
+  if (overlap.length) refuse(`owned paths overlap with active claims: ${overlap.map((o) => `#${o.issue} (${o.mine} ~ ${o.theirs})`).join(', ')}`);
+
+  // Branch: continue the handed-off / previous branch when there is one
+  const prevBranch = toMe ? latest?.links?.branch : a.last?.claim?.branch;
+  const slug = flags.slug || slugify(issue.title);
+  const branch = prevBranch || branchName(cfg, { runtime, issue: issueNo, slug });
+
+  const leaseMin = Number(flags['lease-min'] ?? cfg.claims.lease_minutes);
+  const claim = { type: 'claim', issue: issueNo, agent_id: agent, runtime, role: flags.role ?? null, branch, lease_minutes: leaseMin, claimed_at: iso(now()), owned_paths: owned, nonce: newNonce(), lease_until: leaseUntil(leaseMin) };
+  if (flags['ack-handoff']) claim.ack_handoff = flags['ack-handoff'];
+  if (flags['dry-run']) { out(flags, { dry_run: true, claim }); return EXIT.OK; }
+
+  // Arbiter: post, re-read, earliest live claim wins.
+  const posted = cp.comment(issueNo, claimBody(claim));
+  a = analyze(cp.listComments(issueNo));
+  if (!a.valid || a.valid.comment_id !== posted.id) {
+    try { cp.deleteComment(posted.id); } catch { /* best effort: a stray superseded claim is ignored by analyze */ }
+    refuse(`lost claim race on #${issueNo} to ${a.valid?.claim.agent_id ?? 'another claimant'}`);
+  }
+
+  const toState = fromState === 'changes-requested' || state === 'changes-requested' ? 'state:in-progress' : 'state:claimed';
+  changeLabels(cp, cfg, issueNo, { add: [toState], remove: toMe ? [handoffLabel] : [], actor: 'implementer' });
+  let st;
+  try {
+    const entry = { issue: issueNo, agent_id: agent, runtime, role: claim.role, branch, worktree: null, owned_paths: owned, claimed_at: claim.claimed_at, lease_until: claim.lease_until, heartbeat_at: null, nonce: claim.nonce };
+    st = await updateState(cfg, (s) => { s.claims = s.claims.filter((c) => c.issue !== issueNo); s.claims.push(entry); });
+  } catch (e) { process.stderr.write(`warning: STATE.json not updated (${e.message}); run relay-state rebuild\n`); }
+  appendQuietly(cp, issueNo, { kind: 'claimed', text: `Claimed by ${agent} (${runtime}) on \`${branch}\`, lease ${leaseMin} min${latest && toMe ? `; continuing handoff ${latest.sha} from ${latest.from.runtime}` : ''}.`, agent_id: agent, runtime });
+  const remoteHasBranch = git(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: cfg.__root }).code === 0;
+  out(flags, { ...claim, continuing: remoteHasBranch, handoff: latest ? { sha: latest.sha, from: latest.from } : null }, `claimed #${issueNo} as ${agent} on ${branch}${remoteHasBranch ? ' (continuing existing branch)' : ''}`);
+  return EXIT.OK;
+});

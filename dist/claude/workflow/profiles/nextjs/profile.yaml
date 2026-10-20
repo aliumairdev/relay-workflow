@@ -1,0 +1,35 @@
+stack: nextjs
+description: Next.js applications (template profile; lessons fill from experience).
+ci:
+  steps:
+    - { name: lint, cmd: "npm run -s lint" }
+    - { name: types, cmd: "npx tsc --noEmit" }
+    - { name: test, cmd: "npm test --silent" }
+    - { name: build, cmd: "npm run -s build" }
+  full_steps: ["npx playwright test"]
+  sync_steps: ["npm test --silent"]
+resolvers:
+  - { match: "package-lock.json", strategy: keep-both }
+  - { match: "messages/*.json", strategy: keep-both }
+  - { match: "**/*.md", strategy: union }
+environment:
+  name: preview
+  target_ref: "env:PREVIEW_TARGET"
+  base_url_ref: "env:PREVIEW_URL"
+  secrets: env
+proof:
+  pre_merge:
+    push: "vercel deploy --prebuilt --yes"
+    probe_pages: ["/", "/api/health", "/login"]
+    error_signatures: ["Application error", "Unhandled Runtime Error"]
+  post_merge: { suite: quick, screenshots_max: 4, viewports: [375, 1440], modes: [light, dark] }
+risk:
+  hard_senior_paths: ["middleware.ts"]
+  paths: ["app/api/auth/**", "**/payments/**", "prisma/migrations/**"]
+shared_append_only: ["messages/*.json"]
+destructive_patterns:
+  - { pattern: "vercel\\s+(rm|remove)\\b", reason: "removing a deployment or project" }
+  - { pattern: "prisma\\s+migrate\\s+reset\\b", reason: "resetting the database" }
+brief_rules:
+  profile_rules: ""
+lessons: lessons.yaml

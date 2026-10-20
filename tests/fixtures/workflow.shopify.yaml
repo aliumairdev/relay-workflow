@@ -1,0 +1,94 @@
+version: 1
+project:
+  name: nexus
+  repo: <owner>/<repo>
+  default_branch: main
+  stack: shopify-theme                  # profile
+  worktree_root: ~/worktrees/<repo>     # outside the main checkout
+  state_file: harness/STATE.json
+policy:
+  mode: gated                           # gated | fast
+  fast_merge:
+    close_note: "Fixed by merged PR #{pr}; verification follows on main."
+    post_merge_qa: required
+runtimes:
+  claude:
+    enabled: true
+    resume: send_message
+    models: {T0: claude-haiku-5-5, T1: claude-sonnet-5-5, T2: claude-opus-5-5, T3: claude-fable-5-1}
+    effort_env: {CLAUDE_CODE_EFFORT_LEVEL: medium}
+    strengths: [orchestration, parallel-subagents, ui-design-gate, review]
+  codex:
+    enabled: true
+    resume: relaunch
+    exec_cmd: "codex exec"              # confirm flags for installed version
+    exec_args: ["--sandbox", "workspace-write"]
+    models: {T0: "<mini>", T1: "<default>", T2: "<top>"}
+    strengths: [focused-implementation, review, long-running-refactor]
+    bot: {logins: ["chatgpt-codex-connector[bot]"], severity_block: [P0, P1]}
+runtime_policy:
+  default: any
+  rules:
+    - {when: {labels_any: ["type:refactor"]}, prefer: codex}
+    - {when: {labels_any: ["area:design"]}, prefer: claude}
+  fallback_order: [claude, codex]
+review:
+  cross_runtime: true
+  routine_tier: T1
+  order: [acceptance, architecture, platform, responsive, editor, a11y, performance, seo_aeo, ux_visual, integration, tests]
+  delta_only_rereview: true
+  max_rework_rounds: 3
+roles:                                   # logical roles (Nexus agent:N)
+  "1": {name: foundation,      paths: ["layout/", "config/settings_schema.json", "tools/", ".github/", "package.json"]}
+  "2": {name: design,          paths: ["assets/base.css", "assets/critical.css", "snippets/css-variables.liquid", "listings/"]}
+  "3": {name: commerce,        paths: ["sections/header*", "sections/main-product*", "sections/main-cart*"]}
+  "4": {name: tech-commerce,   paths: ["snippets/spec-*", "snippets/compare-*", "snippets/compat-*", "snippets/fit-*"]}
+  "5": {name: seo-aeo,         paths: ["snippets/meta-tags.liquid", "snippets/structured-data-*"]}
+  "6": {name: qa,              paths: ["tests/", "tools/preview/"]}
+  "7": {name: docs,            paths: ["docs/merchant/", "docs/support/", "docs/release/", "harness/handoffs/"], tier: T0}
+shared_append_only: ["locales/*.json", "layout/theme.liquid", "snippets/icon.liquid", "config/settings_schema.json"]
+labels: {file: core/labels.json, aliases: {"state:ready-for-agent": "state:ready"}}
+claims: {lease_minutes: 30, heartbeat_minutes: 10, branch_pattern: "agent/{runtime}/{issue}-{slug}"}
+plan: {min_ready: 8, target_ready: [10, 20]}
+ci:
+  mode: local                            # PRs verified by script; GitHub CI on default branch only
+  worktree_cache: ~/.relay/ci-wt
+  steps:
+    - {name: check,    cmd: "npm run -s check"}
+    - {name: validate, cmd: "npm run -s validate"}
+    - {name: test,     cmd: "npm run -s test"}
+    - {name: budget,   cmd: "npm run -s budget"}
+  full_steps: ["npm run -s preview", "npm run -s test:a11y", "npm run -s test:seo", "npm run -s test:responsive"]
+  sync_steps: ["npm run -s validate", "npm test --silent"]
+  retry_once_on_fail: true
+  install: {cmd: "npm ci --silent", cache_key_file: package-lock.json}
+bot:
+  gate: true
+  logins: ["chatgpt-codex-connector[bot]"]
+  require_reply_from_non_bot: true
+  recheck_after_push_minutes: 3
+environment:                              # real-environment proof target (scoped, reversible)
+  name: dev-store
+  target_ref: env:DEV_STORE               # never the production store
+  gate_theme_ref: env:GATE_THEME_ID
+  preview_theme_ref: env:PREVIEW_THEME_ID
+  secrets: env                            # credentials only from environment or ephemeral session
+proof:
+  pre_merge: {push: "shopify theme push --store ${DEV_STORE} --theme ${GATE_THEME_ID} --json", probe_pages: ["/", "/collections/all", "/products/${FIRST_PRODUCT}", "/search?q=a", "/cart", "/pages/contact", "/blogs/news", "/collections", "/nope-404"], error_signatures: ["Liquid error", "Liquid syntax error", "translation missing"]}
+  post_merge: {suite: quick, screenshots_max: 4, viewports: [375, 1440], modes: [light, dark]}
+  release: {suite: full, include: [lighthouse, theme_editor]}
+resolvers:
+  - {match: "**/*.md", strategy: union}
+  - {match: "{templates,sections}/*.json", strategy: json-deep-merge, order_keys: [order, block_order]}
+  - {match: "snippets/importmap.liquid", strategy: line-union}
+  - {match: "locales/*.json", strategy: keep-both}
+routing: {include: routing.yaml}           # or inline per section 8.1
+security:
+  secret_patterns: ["(?i)password\\s*[:=]\\s*\\S+", "shpat_[A-Za-z0-9]+", "ghp_[A-Za-z0-9]+", "sk-[A-Za-z0-9]{20,}"]
+  secret_hash_list_file: ~/.relay/secret-hashes     # hashes of known secrets, outside repo
+  destructive_allowlist: []
+  mutation_scope: [dev-store]
+telemetry: off
+brief_rules: [token-rules, codex-rules, worktree-safety, honesty, security]
+honesty: {require_not_verified: true, evidence_lint: true, mutation_check_paths: ["tests/fixtures/"]}
+notifications: {owner_decisions: status_only}

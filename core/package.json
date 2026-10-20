@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "private": true,
+  "name": "relay-core",
+  "version": "0.1.0"
+}

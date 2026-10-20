@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// relay-mcp   stdio MCP server exposing claim_issue, release_claim, handoff, route_model, run_local_ci, enqueue_merge, record_usage, owner_decision.
+// Register: { "mcpServers": { "relay": { "command": "npx", "args": ["-y", "relay-workflow", "mcp"] } } }
+import { serve } from '../lib/mcp.mjs';
+serve();

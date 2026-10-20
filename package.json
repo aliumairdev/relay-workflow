@@ -1,0 +1,15 @@
+{
+  "name": "relay-workflow",
+  "version": "0.1.0",
+  "description": "Multi-agent build workflow: GitHub control plane, model routing, claims and handoffs across Claude and Codex, merge queue, real-environment proof.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "bin": { "relay-workflow": "core/scripts/relay-workflow" },
+  "files": ["core", "generators", "dist", ".claude-plugin", "README.md"],
+  "scripts": {
+    "test": "node --test tests/",
+    "test:harness": "node --test tests/integration/harness.test.mjs"
+  },
+  "dependencies": { "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "yaml": "^2.6.0" }
+}

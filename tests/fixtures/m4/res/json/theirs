@@ -1,0 +1,8 @@
+/* generated */
+{
+  "sections": {
+    "main": { "type": "main" },
+    "faq": { "type": "faq" }
+  },
+  "order": ["main", "faq"]
+}

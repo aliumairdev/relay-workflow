@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "aliases": {
+    "state:ready-for-agent": "state:ready"
+  },
+  "labels": [
+    {
+      "name": "agent:claude",
+      "color": "1d76db",
+      "description": "Runtime owner: claude"
+    },
+    {
+      "name": "agent:codex",
+      "color": "1d76db",
+      "description": "Runtime owner: codex"
+    },
+    {
+      "name": "agent:any",
+      "color": "1d76db",
+      "description": "Runtime owner: any"
+    },
+    {
+      "name": "agent:gemini",
+      "color": "1d76db",
+      "description": "Runtime owner: gemini"
+    },
+    {
+      "name": "agent:1",
+      "color": "0e8a16",
+      "description": "Logical role 1"
+    },
+    {
+      "name": "agent:2",
+      "color": "0e8a16",
+      "description": "Logical role 2"
+    },
+    {
+      "name": "agent:3",
+      "color": "0e8a16",
+      "description": "Logical role 3"
+    },
+    {
+      "name": "agent:4",
+      "color": "0e8a16",
+      "description": "Logical role 4"
+    },
+    {
+      "name": "agent:5",
+      "color": "0e8a16",
+      "description": "Logical role 5"
+    },
+    {
+      "name": "agent:6",
+      "color": "0e8a16",
+      "description": "Logical role 6"
+    },
+    {
+      "name": "agent:7",
+      "color": "0e8a16",
+      "description": "Logical role 7"
+    },
+    {
+      "name": "agent:main",
+      "color": "0e8a16",
+      "description": "Orchestrator-owned"
+    },
+    {
+      "name": "handoff:to-claude",
+      "color": "d93f0b",
+      "description": "Work parked for claude (transient)"
+    },
+    {
+      "name": "handoff:to-codex",
+      "color": "d93f0b",
+      "description": "Work parked for codex (transient)"
+    },
+    {
+      "name": "handoff:to-human",
+      "color": "d93f0b",
+      "description": "Work parked for human (transient)"
+    },
+    {
+      "name": "handoff:to-blocked",
+      "color": "d93f0b",
+      "description": "Work parked for blocked (transient)"
+    },
+    {
+      "name": "state:backlog",
+      "color": "5319e7",
+      "description": "Issue state: backlog"
+    },
+    {
+      "name": "state:ready",
+      "color": "5319e7",
+      "description": "Issue state: ready"
+    },
+    {
+      "name": "state:claimed",
+      "color": "5319e7",
+      "description": "Issue state: claimed"
+    },
+    {
+      "name": "state:in-progress",
+      "color": "5319e7",
+      "description": "Issue state: in-progress"
+    },
+    {
+      "name": "state:review",
+      "color": "5319e7",
+      "description": "Issue state: review"
+    },
+    {
+      "name": "state:changes-requested",
+      "color": "5319e7",
+      "description": "Issue state: changes-requested"
+    },
+    {
+      "name": "state:blocked",
+      "color": "5319e7",
+      "description": "Issue state: blocked"
+    },
+    {
+      "name": "state:done",
+      "color": "5319e7",
+      "description": "Issue state: done"
+    },
+    {
+      "name": "review:claude",
+      "color": "fbca04",
+      "description": "Review requested from claude"
+    },
+    {
+      "name": "review:codex",
+      "color": "fbca04",
+      "description": "Review requested from codex"
+    },
+    {
+      "name": "review:human",
+      "color": "fbca04",
+      "description": "Review requested from human"
+    },
+    {
+      "name": "review:main",
+      "color": "fbca04",
+      "description": "Review requested from main"
+    },
+    {
+      "name": "review:approved",
+      "color": "0e8a16",
+      "description": "Review verdict: approved"
+    },
+    {
+      "name": "review:changes",
+      "color": "b60205",
+      "description": "Review verdict: changes requested"
+    },
+    {
+      "name": "route:T0",
+      "color": "c5def5",
+      "description": "Force routing tier T0"
+    },
+    {
+      "name": "route:T1",
+      "color": "c5def5",
+      "description": "Force routing tier T1"
+    },
+    {
+      "name": "route:T2",
+      "color": "c5def5",
+      "description": "Force routing tier T2"
+    },
+    {
+      "name": "route:T3",
+      "color": "c5def5",
+      "description": "Force routing tier T3"
+    },
+    {
+      "name": "risk:high",
+      "color": "b60205",
+      "description": "High risk: senior review"
+    },
+    {
+      "name": "priority:p0",
+      "color": "e99695",
+      "description": "Priority p0"
+    },
+    {
+      "name": "priority:p1",
+      "color": "e99695",
+      "description": "Priority p1"
+    },
+    {
+      "name": "priority:p2",
+      "color": "e99695",
+      "description": "Priority p2"
+    },
+    {
+      "name": "priority:p3",
+      "color": "e99695",
+      "description": "Priority p3"
+    },
+    {
+      "name": "area:foundation",
+      "color": "bfdadc",
+      "description": "Area: foundation"
+    },
+    {
+      "name": "area:design",
+      "color": "bfdadc",
+      "description": "Area: design"
+    },
+    {
+      "name": "area:commerce",
+      "color": "bfdadc",
+      "description": "Area: commerce"
+    },
+    {
+      "name": "area:tech",
+      "color": "bfdadc",
+      "description": "Area: tech"
+    },
+    {
+      "name": "area:seo-aeo",
+      "color": "bfdadc",
+      "description": "Area: seo-aeo"
+    },
+    {
+      "name": "area:accessibility",
+      "color": "bfdadc",
+      "description": "Area: accessibility"
+    },
+    {
+      "name": "area:performance",
+      "color": "bfdadc",
+      "description": "Area: performance"
+    },
+    {
+      "name": "area:docs",
+      "color": "bfdadc",
+      "description": "Area: docs"
+    },
+    {
+      "name": "area:release",
+      "color": "bfdadc",
+      "description": "Area: release"
+    },
+    {
+      "name": "type:feature",
+      "color": "c2e0c6",
+      "description": "Type: feature"
+    },
+    {
+      "name": "type:bug",
+      "color": "c2e0c6",
+      "description": "Type: bug"
+    },
+    {
+      "name": "type:qa",
+      "color": "c2e0c6",
+      "description": "Type: qa"
+    },
+    {
+      "name": "type:docs",
+      "color": "c2e0c6",
+      "description": "Type: docs"
+    },
+    {
+      "name": "type:refactor",
+      "color": "c2e0c6",
+      "description": "Type: refactor"
+    },
+    {
+      "name": "owner-decision",
+      "color": "d4c5f9",
+      "description": "Needs an owner decision"
+    }
+  ]
+}

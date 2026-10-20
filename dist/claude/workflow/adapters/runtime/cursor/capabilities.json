@@ -1,0 +1,10 @@
+{
+  "runtime": "cursor",
+  "tools": ["rules", "mcp"],
+  "strengths": ["interactive-editing"],
+  "resume": "none",
+  "headless_cmd": null,
+  "effort_control": "none",
+  "usage_reporting": "none",
+  "dispatch": "Rule files only (.cursor/rules) plus MCP tools; participates through claim_issue and handoff. No headless dispatch."
+}

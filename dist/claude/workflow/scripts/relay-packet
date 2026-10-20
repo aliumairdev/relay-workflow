@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// relay-packet build [--pr N | --issue N] [--kind review|decision] [--from-file f.json] [--out f] | check <file.json>
+// Enforces routing.packet_max_words. Exit 3 when oversize or incomplete (names the section to cut).
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { routingOf } from '../lib/router.mjs';
+import { buildPacket } from '../lib/packet.mjs';
+import { validateAgainst } from '../lib/schema.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const acceptance = (body = '') => (/##\s*Acceptance Criteria\s*\n([\s\S]*?)(?:\n##\s|$)/i.exec(body)?.[1] || '').trim();
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { pr: { type: 'string' }, issue: { type: 'string' }, kind: { type: 'string' }, 'from-file': { type: 'string' }, out: { type: 'string' } });
+  const { cfg, cp } = ctx();
+  const max = routingOf(cfg).packet_max_words;
+  if (args[0] === 'check') {
+    const j = JSON.parse(fs.readFileSync(args[1], 'utf8'));
+    const v = validateAgainst('packet', j);
+    if (!v.ok) throw new RelayError(`invalid packet: ${v.errors.join('; ')}`, EXIT.INVALID);
+    const r = buildPacket(j, max);
+    out(flags, { ok: true, words: r.words, counts: r.counts, max }, `ok ${r.words}/${max} words`); return EXIT.OK;
+  }
+  if (args[0] !== 'build') throw new RelayError('usage: relay-packet build [--pr N|--issue N] [--kind review|decision] [--from-file f] | check <file>', EXIT.INVALID);
+  const kind = flags.kind || (flags.pr ? 'review' : 'decision');
+  const given = flags['from-file'] ? JSON.parse(fs.readFileSync(flags['from-file'], 'utf8')) : {};
+  const sections = { ...(given.sections || given) };
+  delete sections.kind; delete sections.target;
+  const num = flags.pr || flags.issue;
+  if (num && kind === 'review') {
+    try {
+      const pr = cp.getIssue(Number(num));
+      sections.PR ||= `#${num} ${pr.title}`;
+      const linked = /Closes #(\d+)/i.exec(pr.body || '')?.[1];
+      if (!sections['Acceptance criteria'] && linked) { const ac = acceptance(cp.getIssue(Number(linked)).body); if (ac) sections['Acceptance criteria'] = ac; }
+    } catch { /* control plane unavailable: only supplied sections are used */ }
+  }
+  const r = buildPacket({ kind, target: num ? `#${num}` : '', sections }, max);
+  if (flags.out && !flags['dry-run']) fs.writeFileSync(flags.out, r.text);
+  out(flags, { words: r.words, max, counts: r.counts, out: flags.out || null, text: flags.out ? undefined : r.text }, flags.out ? `packet ${r.words}/${max} words -> ${flags.out}` : r.text);
+  return EXIT.OK;
+});

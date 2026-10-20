@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+// relay-governor admit --run <json|@file> | release <run_id> | note-rate-limit <run_id> [--retry-after S] [--issue N] | sample-load | report [...]
+// admit exit: 0 admit, 10 wait (load/budget/backoff; prints retry_after_s), 11 deny (ceiling/cap; prints fallback).
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import * as gov from '../lib/governor.mjs';
+import * as ledger from '../lib/ledger.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const argv = process.argv.slice(2);
+  if (argv[0] === 'report') {
+    const r = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'relay-report'), ...argv.slice(1)], { stdio: 'inherit' });
+    return r.status ?? EXIT.ERROR;
+  }
+  const { flags, args } = parse(argv, { run: { type: 'string' }, 'retry-after': { type: 'string' }, issue: { type: 'string' }, 'no-relabel': { type: 'boolean' } });
+  const { cfg, cp } = ctx();
+  const [cmd, id] = args;
+
+  if (cmd === 'sample-load') {
+    const l = gov.sampleLoad(cfg);
+    out(flags, l, `load1=${l.load1} cores=${l.cores} limit=${l.limit} ${l.over ? 'OVER' : 'ok'}`); return EXIT.OK;
+  }
+  if (cmd === 'admit') {
+    if (!flags.run) throw new RelayError('usage: relay-governor admit --run <json|@file>', EXIT.INVALID);
+    let r; try { r = JSON.parse(flags.run.startsWith('@') ? fs.readFileSync(flags.run.slice(1), 'utf8') : flags.run); } catch { throw new RelayError('--run is not valid JSON', EXIT.INVALID); }
+    if (!r.run_id || !r.tier || !r.runtime) throw new RelayError('run needs run_id, tier, runtime', EXIT.INVALID);
+    const res = await gov.admit(cfg, r, { rows: ledger.readAll(cfg), dry: !!flags['dry-run'] });
+    out(flags, res, `${res.decision}: ${res.reason}${res.retry_after_s ? ` (retry in ${res.retry_after_s}s)` : ''}${res.fallback ? ` — suggested fallback: ${JSON.stringify(res.fallback)}` : ''}`);
+    return res.code;
+  }
+  if (cmd === 'release') { const had = await gov.release(cfg, id); out(flags, { released: had }, had ? 'released' : 'not running'); return EXIT.OK; }
+  if (cmd === 'note-rate-limit') {
+    if (!id) throw new RelayError('usage: relay-governor note-rate-limit <run_id> [--retry-after S] [--issue N]', EXIT.INVALID);
+    const res = await gov.noteRateLimit(cfg, id, { retryAfter: flags['retry-after'] ? Number(flags['retry-after']) : undefined });
+    const run0 = res.run, base = { run_id: id, agent_id: run0.agent_id, runtime: run0.runtime, tier: run0.tier, task_class: run0.task_class || 'implement', issue: run0.issue ?? null, pr: run0.pr ?? null };
+    if (!flags['dry-run']) {
+      await ledger.append(cfg, { ...base, outcome: 'rate_limited', rate_limit: true, reason: `attempt ${res.attempt}` });
+      if (res.action === 'fallback') {
+        await ledger.append(cfg, { ...base, outcome: 'fallback', rate_limit: true, reason: res.reason, escalation_from: null });
+        const issue = Number(flags.issue ?? run0.issue);
+        if (issue && !flags['no-relabel']) await gov.fallbackRelabel(cp, cfg, issue, { from: res.from_runtime, to: res.to_runtime, reason: res.reason, agentId: run0.agent_id });
+      }
+    }
+    const { run: _r, ...pub } = res;
+    out(flags, pub, res.action === 'backoff' ? `backoff ${res.wait_s}s (attempt ${res.attempt}); resume the same run ${id}` : res.action === 'fallback' ? `fallback ${res.from_runtime} -> ${res.to_runtime}: ${res.reason}` : res.reason);
+    return res.action === 'no_fallback' ? EXIT.NEEDS_HUMAN : EXIT.OK;
+  }
+  throw new RelayError('usage: relay-governor admit|release|note-rate-limit|sample-load|report', EXIT.INVALID);
+});

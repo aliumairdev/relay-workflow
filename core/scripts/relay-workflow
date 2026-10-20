@@ -1,0 +1,24 @@
+#!/usr/bin/env node
+// relay-workflow <command> [args]   the npx entry point.
+//   init | doctor | update | uninstall      installer commands
+//   route | status | report | loop | journal | claim | handoff | merge | proof | ...   any relay-<name> script
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const version = JSON.parse(fs.readFileSync(path.join(dir, '..', 'package.json'), 'utf8')).version;
+const [cmd, ...rest] = process.argv.slice(2);
+const names = fs.readdirSync(dir).filter((f) => f.startsWith('relay-') && f !== 'relay-workflow').map((f) => f.slice(6));
+
+if (!cmd || cmd === '-h' || cmd === '--help' || cmd === 'help') {
+  console.log(`relay-workflow ${version}\n\nusage: relay-workflow <command> [options]\n\ninstaller:  init  doctor  update  uninstall  version\nscripts:    ${names.filter((n) => !['init', 'doctor', 'update', 'uninstall'].includes(n) && !n.startsWith('hook-')).join('  ')}\n\nRun \`relay-workflow init --dry-run\` first to preview every change.`);
+  process.exit(cmd ? 0 : 1);
+}
+if (cmd === 'version' || cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
+const alias = { 'codex-dispatch': 'codex-dispatch', mcp: 'mcp' };
+const name = alias[cmd] || cmd;
+if (!names.includes(name)) { console.error(`unknown command "${cmd}". Run \`relay-workflow help\`.`); process.exit(3); }
+const r = spawnSync(process.execPath, [path.join(dir, `relay-${name}`), ...rest], { stdio: 'inherit' });
+process.exit(r.status ?? 1);

@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// Fake `gh` for tests: implements the `gh api` subset Relay uses over a JSON file.
+// Env: RELAY_FAKE_GH_DB (json file, required), FAKE_GH_USER (default "relay-user"), FAKE_GH_USER_TYPE (default "User"),
+//      RELAY_NOW (pins the clock; each write advances it by one second so ordering is deterministic).
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { acquire, release } from '../../core/lib/lockfile.mjs';
+
+const argv = process.argv.slice(2);
+const DB = process.env.RELAY_FAKE_GH_DB;
+if (argv[0] === '--version') { console.log('gh version 0.0.0-fake'); process.exit(0); }
+if (argv[0] === 'auth') { console.log('Logged in to fake as ' + (process.env.FAKE_GH_USER || 'relay-user')); process.exit(0); }
+if (argv[0] !== 'api') { console.error('fake gh: unsupported command ' + argv[0]); process.exit(1); }
+if (!DB) { console.error('fake gh: RELAY_FAKE_GH_DB not set'); process.exit(1); }
+
+let method = 'GET', route = null, useInput = false; const fields = {};
+for (let i = 1; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === '-X' || a === '--method') method = argv[++i];
+  else if (a === '--input') { useInput = argv[++i] === '-'; }
+  else if (a === '-f' || a === '-F' || a === '--field' || a === '--raw-field') { const [k, ...v] = argv[++i].split('='); fields[k] = v.join('='); }
+  else if (a === '--paginate' || a === '--slurp' || a === '-i' || a === '--include' || a === '--silent') continue;
+  else if (a === '-H' || a === '--header' || a === '--jq' || a === '-q') i++;
+  else if (!route) route = a;
+}
+let body = {};
+if (useInput) { const t = fs.readFileSync(0, 'utf8'); body = t.trim() ? JSON.parse(t) : {}; }
+else if (method !== 'GET') body = { ...fields };
+
+const lockFile = DB + '.lock';
+for (let n = 0; n < 6000; n++) { if (acquire(lockFile, { staleAfterS: 30 }).acquired) break; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+
+const db = fs.existsSync(DB) ? JSON.parse(fs.readFileSync(DB, 'utf8')) : {};
+db.seq ??= 0; db.tick ??= 0; db.items ??= []; db.comments ??= []; db.labels ??= []; db.reviews ??= []; db.prComments ??= []; db.merged ??= [];
+const user = { login: process.env.FAKE_GH_USER || 'relay-user', type: process.env.FAKE_GH_USER_TYPE || 'User' };
+const base = process.env.RELAY_NOW ? (/^\d+$/.test(process.env.RELAY_NOW) ? new Date(Number(process.env.RELAY_NOW)) : new Date(process.env.RELAY_NOW)) : new Date('2026-10-20T10:00:00Z');
+const stamp = () => new Date(base.getTime() + (++db.tick) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+let dirty = false; const touch = () => { dirty = true; };
+const out = (code, obj) => { if (dirty) fs.writeFileSync(DB, JSON.stringify(db)); release(lockFile); if (code >= 400) { console.error(`fake gh: HTTP ${code}: ${JSON.stringify(obj)}`); process.exit(1); } console.log(JSON.stringify(obj)); process.exit(0); };
+
+const [pathname, qs = ''] = route.replace(/^\//, '').split('?');
+const q = Object.fromEntries(new URLSearchParams(qs)); if (method === 'GET') Object.assign(q, fields);
+const m = pathname.match(/^repos\/([^/]+\/[^/]+)\/(.*)$/);
+if (!m) out(404, { message: 'not found' });
+const repo = m[1]; const rest = m[2];
+const view = (it) => ({ ...it, labels: it.labels.map((name) => ({ name })) });
+const find = (n) => db.items.find((x) => x.number === Number(n));
+const page = (arr) => { const per = Number(q.per_page || 30), p = Number(q.page || 1); return arr.slice((p - 1) * per, p * per); };
+let r;
+// RELAY_FAKE_REMOTE=<bare repo>: PR head shas come from the remote branch and merges are real git squash merges.
+const REMOTE = process.env.RELAY_FAKE_REMOTE;
+const gitR = (args, opts = {}) => spawnSync('git', ['--git-dir', REMOTE, ...args], { encoding: 'utf8', ...opts });
+const headSha = (it) => { if (!REMOTE) return it.pull_request.head.sha; const r = gitR(['rev-parse', '--verify', '-q', `refs/heads/${it.pull_request.head.ref}`]); return r.status === 0 ? r.stdout.trim() : it.pull_request.head.sha; };
+function squashMerge(it) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fakegh-merge-'));
+  const g = (a) => spawnSync('git', ['-c', 'user.name=fake-gh', '-c', 'user.email=fake@example.invalid', ...a], { cwd: tmp, encoding: 'utf8' });
+  try {
+    if (spawnSync('git', ['clone', '-q', REMOTE, tmp], { encoding: 'utf8' }).status !== 0) return { ok: false, why: 'clone failed' };
+    const base = it.pull_request.base.ref, head = it.pull_request.head.ref;
+    if (g(['checkout', '-q', '-B', base, `origin/${base}`]).status !== 0) return { ok: false, why: 'no base' };
+    if (g(['merge', '--squash', `origin/${head}`]).status !== 0) return { ok: false, why: 'conflict' };
+    if (g(['commit', '-q', '--allow-empty', '-m', `${it.title} (#${it.number})`]).status !== 0) return { ok: false, why: 'commit failed' };
+    if (g(['push', '-q', 'origin', `HEAD:refs/heads/${base}`]).status !== 0) return { ok: false, why: 'push failed' };
+    return { ok: true, sha: g(['rev-parse', 'HEAD']).stdout.trim() };
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+
+if ((r = rest.match(/^issues$/))) {
+  if (method === 'GET') {
+    let items = db.items.filter((i) => (q.state === 'all' || (q.state || 'open') === i.state));
+    if (q.labels) { const want = q.labels.split(','); items = items.filter((i) => want.every((l) => i.labels.includes(l))); }
+    out(200, page(items).map(view));
+  }
+  if (method === 'POST') {
+    const it = { number: ++db.seq, title: body.title || '', body: body.body || '', state: 'open', labels: body.labels || [], user, created_at: stamp(), html_url: `https://fake/${repo}/issues/${db.seq}` };
+    db.items.push(it); touch(); out(201, view(it));
+  }
+}
+if ((r = rest.match(/^issues\/comments\/(\d+)$/))) {
+  const c = db.comments.find((x) => x.id === Number(r[1]));
+  if (!c) out(404, { message: 'no comment' });
+  if (method === 'PATCH') { c.body = body.body; c.updated_at = stamp(); touch(); out(200, c); }
+  if (method === 'DELETE') { db.comments = db.comments.filter((x) => x !== c); touch(); out(204, {}); }
+  out(200, c);
+}
+if ((r = rest.match(/^issues\/(\d+)$/))) {
+  const it = find(r[1]); if (!it) out(404, { message: 'not found' });
+  if (method === 'PATCH') {
+    for (const k of ['title', 'body', 'state']) if (body[k] !== undefined) it[k] = body[k];
+    if (body.labels) it.labels = body.labels;
+    touch();
+  }
+  out(200, view(it));
+}
+if ((r = rest.match(/^issues\/(\d+)\/comments$/))) {
+  if (!find(r[1])) out(404, { message: 'not found' });
+  if (method === 'GET') out(200, page(db.comments.filter((c) => c.issue === Number(r[1]))));
+  if (method === 'POST') {
+    const c = { id: 1000 + (++db.seq), issue: Number(r[1]), body: body.body, user, created_at: stamp(), updated_at: null }; db.comments.push(c); touch(); out(201, c);
+  }
+}
+if ((r = rest.match(/^issues\/(\d+)\/labels(?:\/(.+))?$/))) {
+  const it = find(r[1]); if (!it) out(404, { message: 'not found' });
+  if (method === 'GET') out(200, it.labels.map((name) => ({ name })));
+  if (method === 'POST') { for (const l of body.labels || []) if (!it.labels.includes(l)) it.labels.push(l); touch(); }
+  else if (method === 'PUT') { it.labels = [...(body.labels || [])]; touch(); }
+  else if (method === 'DELETE') { const name = decodeURIComponent(r[2]); if (!it.labels.includes(name)) out(404, { message: 'label not on issue' }); it.labels = it.labels.filter((l) => l !== name); touch(); }
+  out(200, it.labels.map((name) => ({ name })));
+}
+if ((r = rest.match(/^labels$/))) {
+  if (method === 'GET') out(200, page(db.labels));
+  if (method === 'POST') { if (db.labels.some((l) => l.name === body.name)) out(422, { message: 'already_exists' }); db.labels.push({ name: body.name, color: body.color, description: body.description }); touch(); out(201, body); }
+}
+if ((r = rest.match(/^pulls$/))) {
+  if (method === 'GET') out(200, page(db.items.filter((i) => i.pull_request && (q.state === 'all' || (q.state || 'open') === i.state))).map(view));
+  if (method === 'POST') {
+    const it = { number: ++db.seq, title: body.title, body: body.body || '', state: 'open', labels: [], user, created_at: stamp(), pull_request: { head: { ref: body.head, sha: body.head_sha || `sha-${db.seq}` }, base: { ref: body.base }, merged: false }, html_url: `https://fake/${repo}/pull/${db.seq}` };
+    db.items.push(it); touch(); out(201, view(it));
+  }
+}
+if ((r = rest.match(/^pulls\/(\d+)$/))) {
+  const it = find(r[1]); if (!it || !it.pull_request) out(404, { message: 'not found' });
+  if (method === 'PATCH') { if (body.base) it.pull_request.base.ref = body.base; if (body.head_sha) it.pull_request.head.sha = body.head_sha; if (body.state) it.state = body.state; touch(); }
+  out(200, { ...view(it), head: { ...it.pull_request.head, sha: headSha(it) }, base: it.pull_request.base, merged: it.pull_request.merged });
+}
+if ((r = rest.match(/^pulls\/(\d+)\/merge$/))) {
+  const it = find(r[1]); if (!it || !it.pull_request) out(404, { message: 'not found' });
+  if (it.state !== 'open') out(405, { message: 'not open' });
+  if (db.mergeConflicts?.includes(it.number)) out(405, { message: 'Pull Request is not mergeable' });
+  let msha = `merge-${it.number}`;
+  if (REMOTE) { const m = squashMerge(it); if (!m.ok) out(405, { message: `Pull Request is not mergeable (${m.why})` }); msha = m.sha; }
+  it.state = 'closed'; it.pull_request.merged = true; db.merged.push({ pr: it.number, method: body.merge_method || body.method || 'squash', at: stamp() }); touch();
+  out(200, { merged: true, sha: msha });
+}
+if ((r = rest.match(/^pulls\/(\d+)\/comments$/))) {
+  if (method === 'GET') out(200, page(db.prComments.filter((c) => c.pr === Number(r[1]))));
+  if (method === 'POST') { const c = { id: 5000 + (++db.seq), pr: Number(r[1]), body: body.body, in_reply_to_id: body.in_reply_to ? Number(body.in_reply_to) : null, user, created_at: stamp(), path: body.path || null }; db.prComments.push(c); touch(); out(201, c); }
+}
+if ((r = rest.match(/^pulls\/(\d+)\/reviews$/))) {
+  if (method === 'GET') out(200, page(db.reviews.filter((c) => c.pr === Number(r[1]))));
+  if (method === 'POST') { const c = { id: 7000 + (++db.seq), pr: Number(r[1]), body: body.body || '', state: body.event || 'COMMENTED', user, submitted_at: stamp() }; db.reviews.push(c); touch(); out(201, c); }
+}
+out(404, { message: `fake gh: unhandled ${method} ${pathname}` });

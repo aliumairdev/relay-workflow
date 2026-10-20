@@ -1,0 +1,13 @@
+stack: generic
+description: Stack-agnostic defaults. CI steps are detected from the project (package.json scripts) or set by hand in workflow.yaml.
+resolvers:
+  - { match: "**/*.md", strategy: union }
+  - { match: "**/package-lock.json", strategy: keep-both }
+risk:
+  hard_senior_paths: []
+  paths: ["**/auth/**", "**/migrations/**", "**/payments/**", ".github/workflows/**"]
+shared_append_only: []
+destructive_patterns: []
+brief_rules:
+  profile_rules: ""
+lessons: lessons.yaml

@@ -1,0 +1,1 @@
+RUNTIME: Codex (headless). You cannot be resumed mid-task: finish, or post a handoff with `relay-handoff post`. Work only inside the worktree you were launched in. Do not rely on interactive approvals; if a command needs one, record it as NOT_VERIFIED and continue.

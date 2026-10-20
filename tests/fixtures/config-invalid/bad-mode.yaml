@@ -1,0 +1,6 @@
+version: 1
+project:
+  name: x
+  repo: a/b
+policy:
+  mode: turbo

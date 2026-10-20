@@ -1,0 +1,4 @@
+BOT REVIEW (mandatory): {{bot_logins}} also review(s) every PR. Before reporting done, list its comments:
+  gh api repos/{{repo}}/pulls/<PR>/comments --paginate
+and the review-level comments from `gh api repos/{{repo}}/pulls/<PR>/reviews`. Only comments whose author login exactly matches one of: {{bot_logins}}.
+For EACH comment: if valid → fix it (commit), then reply on that thread: `gh api repos/{{repo}}/pulls/<PR>/comments/<id>/replies -f body="Fixed in <sha>: <one line>"`. If not valid/not applicable → reply with a one-line technical reason. Blocking severities ({{bot_severity_block}}) must be fixed unless clearly wrong. Every bot comment needs a reply from a non-bot account — the merge gate blocks PRs with unanswered bot comments, and a reply written by the bot itself does not clear a comment. The bot may re-review after your push; check again about {{recheck_minutes}} min after pushing and handle new comments.

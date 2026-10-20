@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/relay/workflow.schema.json",
+  "title": "Relay workflow.yaml",
+  "type": "object",
+  "required": ["version", "project"],
+  "additionalProperties": false,
+  "$defs": {
+    "tierId": { "enum": ["T0", "T1", "T2", "T3"] },
+    "strList": { "type": "array", "items": { "type": "string" } },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "resume": { "enum": ["send_message", "relaunch", "none"] },
+        "exec_cmd": { "type": "string" },
+        "exec_args": { "$ref": "#/$defs/strList" },
+        "prompt_mode": { "enum": ["arg", "stdin"] },
+        "model_flag": { "type": "string" },
+        "timeout_s": { "type": "integer", "minimum": 1 },
+        "rate_limit_patterns": { "$ref": "#/$defs/strList" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "models": { "type": "object", "propertyNames": { "$ref": "#/$defs/tierId" }, "additionalProperties": { "type": ["string", "null"] } },
+        "effort_env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "strengths": { "$ref": "#/$defs/strList" },
+        "bot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "logins": { "$ref": "#/$defs/strList" }, "severity_block": { "$ref": "#/$defs/strList" } }
+        }
+      }
+    },
+    "resolver": {
+      "type": "object",
+      "required": ["match", "strategy"],
+      "additionalProperties": false,
+      "properties": {
+        "match": { "type": "string" },
+        "strategy": { "enum": ["union", "json-deep-merge", "line-union", "keep-both"] },
+        "order_keys": { "$ref": "#/$defs/strList" }
+      }
+    }
+  },
+  "properties": {
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["name", "repo"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$|^local$" },
+        "default_branch": { "type": "string", "default": "main" },
+        "stack": { "type": "string" },
+        "worktree_root": { "type": "string" },
+        "state_file": { "type": "string" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["gated", "fast"] },
+        "fast_merge": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "close_note": { "type": "string" }, "post_merge_qa": { "enum": ["required", "optional", "off"] } }
+        }
+      }
+    },
+    "runtimes": { "type": "object", "additionalProperties": { "$ref": "#/$defs/runtime" } },
+    "runtime_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": "string" },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["when", "prefer"],
+            "additionalProperties": false,
+            "properties": {
+              "when": { "type": "object", "additionalProperties": false, "properties": { "labels_any": { "$ref": "#/$defs/strList" }, "paths_any": { "$ref": "#/$defs/strList" } } },
+              "prefer": { "type": "string" }
+            }
+          }
+        },
+        "fallback_order": { "$ref": "#/$defs/strList" }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cross_runtime": { "type": "boolean" },
+        "routine_tier": { "$ref": "#/$defs/tierId" },
+        "order": { "$ref": "#/$defs/strList" },
+        "delta_only_rereview": { "type": "boolean" },
+        "max_rework_rounds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": { "name": { "type": "string" }, "paths": { "$ref": "#/$defs/strList" }, "tier": { "$ref": "#/$defs/tierId" } }
+      }
+    },
+    "shared_append_only": { "$ref": "#/$defs/strList" },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "file": { "type": "string" }, "aliases": { "type": "object", "additionalProperties": { "type": "string" } } }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lease_minutes": { "type": "integer", "minimum": 1 },
+        "heartbeat_minutes": { "type": "integer", "minimum": 1 },
+        "branch_pattern": { "type": "string" }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "min_ready": { "type": "integer" }, "target_ready": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 } }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["local", "remote"] },
+        "worktree_cache": { "type": "string" },
+        "steps": { "type": "array", "items": { "type": "object", "required": ["name", "cmd"], "additionalProperties": false, "properties": { "name": { "type": "string" }, "cmd": { "type": "string" } } } },
+        "full_steps": { "$ref": "#/$defs/strList" },
+        "sync_steps": { "$ref": "#/$defs/strList" },
+        "retry_once_on_fail": { "type": "boolean" },
+        "install": { "type": "object", "additionalProperties": false, "properties": { "cmd": { "type": "string" }, "cache_key_file": { "type": "string" } } },
+        "failure_grep": { "type": "string" }
+      }
+    },
+    "bot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gate": { "type": "boolean" },
+        "logins": { "$ref": "#/$defs/strList" },
+        "require_reply_from_non_bot": { "type": "boolean" },
+        "recheck_after_push_minutes": { "type": "number" }
+      }
+    },
+    "environment": { "type": "object" },
+    "proof": { "type": "object" },
+    "resolvers": { "type": "array", "items": { "$ref": "#/$defs/resolver" } },
+    "tiers": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/tierId" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "claude": { "type": ["string", "null"] },
+          "codex": { "type": ["string", "null"] },
+          "effort": { "enum": ["low", "medium", "high"] },
+          "context_tokens": { "type": "integer" },
+          "cost_rel": { "type": "number" },
+          "price_usd_per_mtok": { "type": "object", "properties": { "in": { "type": "number" }, "out": { "type": "number" } } },
+          "strengths": { "$ref": "#/$defs/strList" }
+        }
+      }
+    },
+    "routing": { "type": "object" },
+    "budgets": { "type": "object" },
+    "concurrency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "max_agents": { "type": "integer" }, "hard_max": { "type": "integer" }, "load_limit_factor": { "type": "number" }, "heavy_slots": { "type": "integer" } }
+    },
+    "rate_limit": { "type": "object" },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "secret_patterns": { "$ref": "#/$defs/strList" },
+        "secret_hash_list_file": { "type": "string" },
+        "destructive_allowlist": { "$ref": "#/$defs/strList" },
+        "mutation_scope": { "$ref": "#/$defs/strList" }
+      }
+    },
+    "telemetry": { "enum": ["off", "on"] },
+    "brief_rules": { "$ref": "#/$defs/strList" },
+    "honesty": {
+      "type": "object",
+      "properties": {
+        "require_not_verified": { "type": "boolean" },
+        "evidence_lint": { "type": "boolean" },
+        "mutation_check_paths": { "$ref": "#/$defs/strList" },
+        "mutation_checks": { "type": "array", "items": { "type": "object", "required": ["name", "test", "mutate"], "additionalProperties": false, "properties": { "name": { "type": "string" }, "test": { "type": "string" }, "mutate": { "type": "string" } } } }
+      }
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "require": { "$ref": "#/$defs/strList" } }
+    },
+    "notifications": { "type": "object" }
+  }
+}

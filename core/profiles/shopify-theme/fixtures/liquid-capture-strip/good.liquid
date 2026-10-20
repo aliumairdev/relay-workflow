@@ -1,0 +1,5 @@
+{% capture total %}
+  {{ product.price | divided_by: 100 }}
+{% endcapture %}
+{% assign total = total | strip %}
+{% if total > 100 %}<span>big</span>{% endif %}

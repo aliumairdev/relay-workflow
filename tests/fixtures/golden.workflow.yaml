@@ -1,0 +1,6 @@
+version: 1
+project: { name: demo, repo: acme/demo, default_branch: main, worktree_root: /wt/demo }
+review: { order: [acceptance, architecture, tests] }
+ci: { steps: [ { name: check, cmd: "npm run -s check" }, { name: test, cmd: "npm test" } ], sync_steps: ["npm test"] }
+runtimes:
+  codex: { enabled: true, bot: { logins: ["codex-bot[bot]"], severity_block: [P0, P1] } }

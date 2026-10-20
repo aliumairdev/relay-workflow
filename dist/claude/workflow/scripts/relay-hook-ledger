@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// PostToolUse(Bash): per-session tool-use counters for cost estimation. Counts only; never content.
+import fs from 'node:fs';
+import path from 'node:path';
+import { guard, allow } from '../lib/hooklib.mjs';
+import { relayDir } from '../lib/config.mjs';
+
+guard('ledger', (payload, cfg) => {
+  if (!cfg) return allow();
+  const dir = path.join(relayDir(cfg), 'ledger', 'counters');
+  fs.mkdirSync(dir, { recursive: true });
+  const id = String(payload.session_id || 'unknown').replace(/[^\w-]/g, '');
+  const f = path.join(dir, `${id}.json`);
+  let c = { session_id: id, tool_calls: 0, bash_calls: 0, response_bytes: 0, first_at: null, last_at: null };
+  try { c = { ...c, ...JSON.parse(fs.readFileSync(f, 'utf8')) }; } catch { /* first call */ }
+  const at = new Date().toISOString();
+  c.tool_calls += 1; c.bash_calls += payload.tool_name === 'Bash' ? 1 : 0;
+  c.response_bytes += Buffer.byteLength(JSON.stringify(payload.tool_response ?? ''));
+  c.first_at ??= at; c.last_at = at;
+  fs.writeFileSync(f, JSON.stringify(c));
+  allow();
+});

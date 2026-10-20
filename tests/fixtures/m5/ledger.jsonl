@@ -1,0 +1,10 @@
+{"ts":"2026-10-20T10:00:00Z","run_id":"r1","runtime":"claude","tier":"T1","task_class":"implement","issue":10,"pr":null,"tokens_in":90000,"tokens_out":10000,"cost_usd":1.0,"outcome":"done"}
+{"ts":"2026-10-20T10:10:00Z","run_id":"r2","runtime":"codex","tier":"T1","task_class":"routine_review","issue":10,"pr":20,"tokens_in":45000,"tokens_out":5000,"cost_usd":0.5,"outcome":"changes_requested"}
+{"ts":"2026-10-20T10:20:00Z","run_id":"r3","runtime":"claude","tier":"T1","task_class":"implement","issue":10,"pr":null,"tokens_in":45000,"tokens_out":5000,"cost_usd":0.5,"outcome":"done"}
+{"ts":"2026-10-20T10:30:00Z","run_id":"r4","runtime":"codex","tier":"T1","task_class":"routine_review","issue":10,"pr":20,"tokens_in":45000,"tokens_out":5000,"cost_usd":0.5,"outcome":"approved"}
+{"ts":"2026-10-20T10:40:00Z","run_id":"r5","runtime":"claude","tier":"T1","task_class":"merge","issue":10,"pr":20,"tokens_in":0,"tokens_out":0,"cost_usd":0,"outcome":"done"}
+{"ts":"2026-10-20T11:00:00Z","run_id":"r6","runtime":"claude","tier":"T1","task_class":"implement","issue":11,"pr":null,"tokens_in":180000,"tokens_out":20000,"cost_usd":2.0,"outcome":"done"}
+{"ts":"2026-10-20T11:10:00Z","run_id":"r7","runtime":"claude","tier":"T2","task_class":"high_risk_review","issue":11,"pr":21,"tokens_in":18000,"tokens_out":2000,"cost_usd":1.5,"outcome":"approved","escalation_from":"T1"}
+{"ts":"2026-10-20T11:20:00Z","run_id":"r8","runtime":"claude","tier":"T1","task_class":"merge","issue":11,"pr":21,"tokens_in":0,"tokens_out":0,"cost_usd":0,"outcome":"done"}
+{"ts":"2026-10-20T11:30:00Z","run_id":"r9","runtime":"claude","tier":"T0","task_class":"docs","issue":11,"pr":null,"tokens_in":9000,"tokens_out":1000,"cost_usd":0.1,"outcome":"done"}
+{"ts":"2026-10-20T12:00:00Z","run_id":"r10","runtime":"claude","tier":"T1","task_class":"implement","issue":12,"pr":null,"tokens_in":0,"tokens_out":0,"cost_usd":0,"outcome":"rate_limited","rate_limit":true}

@@ -1,0 +1,1 @@
+Your approved PR #{{pr}} fails validate/test after merging current origin/{{default_branch}}. In your own worktree: `git pull`, `git merge origin/{{default_branch}}` ({{resolver_hints}}), fix failures, run {{sync_steps}}, push (merge commit fine). Report ≤30 words.

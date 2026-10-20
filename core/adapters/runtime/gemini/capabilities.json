@@ -1,0 +1,10 @@
+{
+  "runtime": "gemini",
+  "tools": ["exec"],
+  "strengths": ["large-context", "repo-wide-refactor"],
+  "resume": "relaunch",
+  "headless_cmd": "gemini -p",
+  "effort_control": "none",
+  "usage_reporting": "none",
+  "dispatch": "Extension point (assumption, NOT_VERIFIED): configure runtimes.gemini.exec_cmd and prompt_mode; the generic headless dispatcher does the rest."
+}

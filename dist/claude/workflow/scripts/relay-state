@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+// relay-state get [path] | set <path> <json> | claims | rebuild
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { readState, updateState } from '../lib/state.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const getPath = (o, p) => (p ? p.split('.').reduce((a, k) => (a == null ? a : a[k]), o) : o);
+function setPath(o, p, v) { const ks = p.split('.'); let t = o; for (const k of ks.slice(0, -1)) t = t[k] ??= {}; t[ks.at(-1)] = v; }
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { reason: { type: 'string' } });
+  const [cmd, a, b] = args;
+  const { cfg, cp } = ctx();
+  if (cmd === 'get') { const v = getPath(readState(cfg), a); out({ json: true }, v === undefined ? null : v); return v === undefined ? EXIT.ERROR : EXIT.OK; }
+  if (cmd === 'claims') { const c = readState(cfg).claims; out(flags, c, c.map((x) => `#${x.issue} ${x.agent_id} ${x.branch} until ${x.lease_until}`).join('\n') || 'no active claims'); return EXIT.OK; }
+  if (cmd === 'set') {
+    if (!a || b === undefined) throw new RelayError('usage: relay-state set <path> <json>', EXIT.INVALID);
+    let v; try { v = JSON.parse(b); } catch { v = b; }
+    if (flags['dry-run']) { out(flags, { dry_run: true, path: a, value: v }); return EXIT.OK; }
+    const { iso } = await import('../lib/clock.mjs');
+    const s = await updateState(cfg, (st) => {
+      setPath(st, a, v);
+      if (a === 'policy.mode') { st.policy.changed_at = iso(); st.policy.reason = flags.reason ?? st.policy.reason; }
+    });
+    out(flags, getPath(s, a)); return EXIT.OK;
+  }
+  if (cmd === 'rebuild') {
+    const { rebuildClaims } = await import('../lib/claims.mjs');
+    const claims = rebuildClaims(cp, cfg);
+    if (!flags['dry-run']) await updateState(cfg, (st) => { st.claims = claims; });
+    out(flags, claims, `rebuilt ${claims.length} claim(s) from GitHub`); return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-state get|set|claims|rebuild', EXIT.INVALID);
+});

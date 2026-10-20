@@ -1,0 +1,8 @@
+/* generated */
+{
+  "sections": {
+    "main": { "type": "main" },
+    "hero": { "type": "hero" }
+  },
+  "order": ["main", "hero"]
+}

@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+// PreToolUse(Write|Edit|MultiEdit): writes must land in the claimed worktree on the claimed branch.
+import path from 'node:path';
+import { guard, allow, deny } from '../lib/hooklib.mjs';
+import { git } from '../lib/exec.mjs';
+import { readState } from '../lib/state.mjs';
+import { worktreeRoot, isInside, realish, mainCheckout } from '../lib/worktree.mjs';
+
+guard('worktree-guard', (payload, cfg) => {
+  if (!cfg || !['Write', 'Edit', 'MultiEdit'].includes(payload.tool_name)) return allow();
+  const cwd = payload.cwd || process.cwd();
+  const file = payload.tool_input?.file_path;
+  if (!file) return allow();
+  const target = path.resolve(cwd, file);
+  const top = git(['rev-parse', '--show-toplevel'], { cwd }).stdout.trim();
+  if (!top) return allow();
+  const here = realish(top), main = mainCheckout(cfg);
+  const inWt = isInside(here, worktreeRoot(cfg)) && here !== main;
+  const issueEnv = process.env.RELAY_ISSUE;
+
+  // An implementer launched for an issue must never write in the main checkout.
+  if (!inWt) {
+    if (issueEnv && isInside(target, main)) return deny(`worktree-guard: RELAY_ISSUE=${issueEnv} is set, but ${file} is inside the main checkout. Create your worktree with \`relay-worktree create ${issueEnv} --runtime <rt>\` and work there.`);
+    return allow();
+  }
+  const st = readState(cfg);
+  const claim = st.claims.find((c) => c.worktree && realish(c.worktree) === here);
+  if (!claim) return deny(`worktree-guard: ${here} is a Relay worktree with no active claim. Claim the issue (\`relay-claim\`) or the lease may have expired (\`relay-lease sweep\`); do not write until \`relay-worktree verify\` passes.`);
+  if (!isInside(target, here)) return deny(`worktree-guard: ${file} is outside your claimed worktree ${here} (issue #${claim.issue}).`);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: here }).stdout.trim();
+  if (branch !== claim.branch) return deny(`worktree-guard: worktree is on branch "${branch}" but issue #${claim.issue} is claimed on "${claim.branch}". Check out the claimed branch.`);
+  allow();
+});

@@ -1,0 +1,17 @@
+{
+  "name": "workflow",
+  "version": "0.1.0",
+  "description": "Multi-agent build workflow: GitHub control plane, model routing, claims and handoffs across Claude and Codex, merge queue, real-environment proof.",
+  "author": {
+    "name": "owner"
+  },
+  "license": "MIT",
+  "keywords": [
+    "multi-agent",
+    "workflow",
+    "github",
+    "codex",
+    "claude",
+    "model-routing"
+  ]
+}
