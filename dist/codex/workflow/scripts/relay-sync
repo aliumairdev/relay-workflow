@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// relay-sync <branch>   merge the default branch into <branch> (temp worktree, resolvers, sync_steps, push). Exit 0 / 2 manual / 3 steps failed / 9 fetch
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { syncBranch } from '../lib/sync.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2));
+  if (!args[0]) throw new RelayError('usage: relay-sync <branch>', EXIT.INVALID);
+  const cfg = loadConfig();
+  if (flags['dry-run']) { out(flags, { dry_run: true }, `would merge origin/${cfg.project.default_branch} into ${args[0]}`); return EXIT.OK; }
+  const r = await syncBranch(cfg, args[0]);
+  if (flags.json) out(flags, r);
+  else { process.stdout.write(r.msg + '\n'); for (const l of r.summary || []) process.stdout.write(`    ${l}\n`); for (const f of r.leftovers || []) process.stdout.write(`    UNRESOLVED: ${f}\n`); }
+  return r.code;
+});

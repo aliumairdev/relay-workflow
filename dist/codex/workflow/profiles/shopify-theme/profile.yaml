@@ -1,0 +1,39 @@
+stack: shopify-theme
+description: Shopify theme projects (Online Store 2.0). Platform facts live here, never in core.
+ci:
+  steps:
+    - { name: check, cmd: "npm run -s check" }       # shopify theme check, 0 errors
+    - { name: validate, cmd: "npm run -s validate" }  # JSON/schema/locale sanity, forbidden patterns, design-lint
+    - { name: test, cmd: "npm test --silent" }
+    - { name: budget, cmd: "npm run -s budget" }
+  full_steps: ["npm run -s preview", "npm run -s test:a11y", "npm run -s test:seo", "npm run -s test:responsive"]
+  sync_steps: ["npm run -s validate", "npm test --silent"]
+  failure_grep: "not ok|✖|violation|error|Error|TranslationKey|design-lint|setting-values"
+resolvers:
+  - { match: "**/*.md", strategy: union }
+  - { match: "{templates,sections}/*.json", strategy: json-deep-merge, order_keys: [order, block_order] }
+  - { match: "snippets/importmap.liquid", strategy: line-union }
+  - { match: "locales/*.json", strategy: keep-both }
+environment:
+  name: dev-store
+  target_ref: "env:DEV_STORE"          # never the production store
+  base_url_ref: "env:DEV_STORE_URL"
+  secrets: env
+proof:
+  pre_merge:
+    push: "shopify theme push --store ${DEV_STORE} --theme ${GATE_THEME_ID} --json"
+    probe_pages: ["/", "/collections/all", "/products/${FIRST_PRODUCT}", "/search?q=a", "/cart", "/pages/contact", "/blogs/news", "/collections", "/nope-404"]
+    error_signatures: ["Liquid error", "Liquid syntax error", "translation missing"]
+  post_merge: { suite: quick, screenshots_max: 4, viewports: [375, 1440], modes: [light, dark] }
+  release: { suite: full, include: [lighthouse, theme_editor] }
+risk:
+  hard_senior_paths: ["sections/*cart*", "snippets/*cart*"]
+  paths: ["snippets/structured-data-*", "snippets/spec-source.liquid", "assets/*compat*", "snippets/compat-*", "sections/main-product*", "config/settings_schema.json"]
+shared_append_only: ["locales/*.json", "layout/theme.liquid", "snippets/icon.liquid", "config/settings_schema.json"]
+destructive_patterns:
+  - { pattern: "shopify\\s+theme\\s+(delete|publish)\\b", reason: "deleting or publishing a theme changes the live store" }
+  - { pattern: "shopify\\s+theme\\s+push\\b[^\\n]*--(live|allow-live)", reason: "pushing to the live theme" }
+brief_rules:
+  profile_rules: "STORE: do not push to the store yourself; the merge queue runs the environment check. Store-only pitfalls: no braces inside strings in output tags; filters like external_video_url only on media objects; range settings need at least 3 steps and a default on a step; only ONE link_list setting per section schema; JS modules registered one per line in the import map."
+harness_gap_rules: [liquid-capture-strip, block-wrapper-child-combinator, liquid-blank-after-filter, schema-range-step, schema-link-list-once, liquid-braces-in-strings]
+lessons: lessons.yaml

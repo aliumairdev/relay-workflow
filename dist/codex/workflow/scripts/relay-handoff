@@ -1,0 +1,100 @@
+#!/usr/bin/env node
+// relay-handoff post <issue> --to <claude|codex|gemini|human|blocked> --reason <enum> [--from-file f.json] [--agent id] [--no-push]
+// relay-handoff read <issue> [--all]
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { analyze } from '../lib/claims.mjs';
+import { handoffBody, handoffSha, handoffsOf } from '../lib/handoff.mjs';
+import { validateAgainst } from '../lib/schema.mjs';
+import { lintHandoff } from '../lib/evidence.mjs';
+import { readState, updateState } from '../lib/state.mjs';
+import { embed } from '../lib/markers.mjs';
+import { stateOf } from '../lib/labels.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import { now, iso } from '../lib/clock.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const RUNTIMES = ['claude', 'codex', 'gemini'];
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { to: { type: 'string' }, reason: { type: 'string' }, 'from-file': { type: 'string' }, agent: { type: 'string' }, 'from-runtime': { type: 'string' }, 'no-push': { type: 'boolean' }, 'keep-worktree': { type: 'boolean' }, all: { type: 'boolean' } });
+  const [cmd, arg] = args;
+  const issueNo = Number(arg);
+  if (!issueNo) throw new RelayError('usage: relay-handoff post|read <issue> ...', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+
+  if (cmd === 'read') {
+    const hs = handoffsOf(cp.listComments(issueNo));
+    if (!hs.length) { out(flags, null, 'no handoff'); return EXIT.ERROR; }
+    const pick = flags.all ? hs : hs.at(-1);
+    out({ json: true }, pick); return EXIT.OK;
+  }
+  if (cmd !== 'post') throw new RelayError('usage: relay-handoff post|read <issue>', EXIT.INVALID);
+  if (!flags.to || !flags.reason) throw new RelayError('handoff post needs --to and --reason', EXIT.INVALID);
+
+  if (RUNTIMES.includes(flags.to) && cfg.runtimes && (!cfg.runtimes[flags.to] || cfg.runtimes[flags.to].enabled === false)) throw new RelayError(`refused: runtime ${flags.to} is not enabled in workflow.yaml (enabled: ${Object.entries(cfg.runtimes).filter(([, r]) => r.enabled !== false).map(([n]) => n).join(', ') || 'none'}); hand off to an enabled runtime, to human, or release the claim`, EXIT.INVALID);
+  const input = flags['from-file'] ? JSON.parse(fs.readFileSync(flags['from-file'], 'utf8')) : {};
+  const st = readState(cfg);
+  const claim = st.claims.find((c) => c.issue === issueNo);
+  const cwd = claim?.worktree && fs.existsSync(claim.worktree) ? claim.worktree : process.cwd();
+  const branch = input.links?.branch || claim?.branch || git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd }).stdout.trim();
+  const head = input.links?.head_sha || git(['rev-parse', '--short=10', 'HEAD'], { cwd }).stdout.trim() || 'unknown';
+  let files = input.files_touched;
+  if (!files) files = git(['diff', '--name-only', `origin/${cfg.project.default_branch}...HEAD`], { cwd }).stdout.split('\n').filter(Boolean);
+  const prior = handoffsOf(cp.listComments(issueNo)).at(-1);
+  const rec = {
+    type: 'handoff', issue: issueNo,
+    from: input.from || { agent_id: flags.agent || process.env.RELAY_AGENT_ID || claim?.agent_id || 'unknown', runtime: flags['from-runtime'] || claim?.runtime || 'unknown' },
+    to: { runtime: flags.to }, reason: flags.reason,
+    done: input.done || [], remaining: input.remaining || [], files_touched: files, tests_run: input.tests_run || [],
+    not_verified: input.not_verified || [], decisions: input.decisions || [], next_steps: input.next_steps || [], risks: input.risks || [],
+    links: { branch, pr: input.links?.pr ?? null, head_sha: head }, previous: prior?.sha ?? null,
+  };
+  const v = validateAgainst('handoff', { ...rec, sha: 'x' });
+  if (!v.ok) throw new RelayError(`invalid handoff: ${v.errors.join('; ')}`, EXIT.INVALID);
+  if (cfg.honesty?.evidence_lint !== false) {
+    const bad = lintHandoff(rec);
+    if (bad.length) throw new RelayError(`handoff fails the evidence lint: ${bad.map((b) => b.message).join('; ')}`, EXIT.INVALID);
+  }
+  rec.sha = handoffSha(rec);
+  if (flags['dry-run']) { out(flags, { dry_run: true, handoff: rec }); return EXIT.OK; }
+
+  // Only pushed work is handed over: refuse with uncommitted changes.
+  const dirty = git(['status', '--porcelain'], { cwd }).stdout.trim();
+  if (dirty && !flags['no-push']) throw new RelayError(`refused: uncommitted changes in ${cwd}; commit them (or pass --no-push) before handing off`, EXIT.ENV);
+
+  // Push so the receiver can continue on the same branch.
+  if (!flags['no-push'] && git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd }).stdout.trim() === branch) {
+    const p = git(['push', 'origin', branch], { cwd });
+    if (p.code !== 0) throw new RelayError(`push failed, handoff not posted: ${p.stderr.trim().split('\n')[0]}`, EXIT.ENV);
+  }
+  cp.comment(issueNo, handoffBody(rec));
+
+  // Release the sender's claim.
+  const a = analyze(cp.listComments(issueNo));
+  const mine = [...a.records].reverse().find((r) => r.claim.agent_id === rec.from.agent_id && ['active', 'expired'].includes(r.status));
+  if (mine) cp.comment(issueNo, embed('release', { type: 'release', issue: issueNo, agent_id: rec.from.agent_id, nonce: mine.claim.nonce, reason: 'handoff', at: iso(now()) }, `RELEASED by ${rec.from.agent_id}: handoff to ${flags.to}`));
+
+  // Relabel: owner runtime follows the handoff (sanctioned route), handoff label set, state parked.
+  const issue = cp.getIssue(issueNo);
+  let labels = issue.labels.filter((l) => !l.startsWith('handoff:') && !/^agent:(claude|codex|any|gemini)$/.test(l));
+  const isRuntime = RUNTIMES.includes(flags.to);
+  if (isRuntime) labels.push(`agent:${flags.to}`);
+  labels.push(flags.to === 'blocked' ? 'handoff:blocked' : `handoff:to-${flags.to}`);
+  const cur = stateOf(issue.labels)[0];
+  const target = flags.reason === 'review_rework' && cur !== 'ready' ? cur : isRuntime ? 'ready' : 'blocked';
+  labels = labels.filter((l) => !l.startsWith('state:')).concat(`state:${target}`);
+  if (flags.to === 'human') labels.push('owner-decision');
+  cp.setLabels(issueNo, [...new Set(labels)]);
+  await updateState(cfg, (s) => { s.claims = s.claims.filter((c) => c.issue !== issueNo); });
+  appendQuietly(cp, issueNo, { kind: 'handoff', text: `Handed ${rec.from.runtime} → ${flags.to} (${flags.reason}), handoff ${rec.sha}. Done: ${rec.done.join('; ') || 'n/a'}. Remaining: ${rec.remaining.join('; ') || 'n/a'}.`.slice(0, 1200), agent_id: rec.from.agent_id, runtime: rec.from.runtime, head_sha: rec.links.head_sha });
+  // The receiver continues the same branch in its own worktree, so the sender's worktree must go.
+  if (!flags['keep-worktree'] && claim?.worktree && fs.existsSync(claim.worktree)) {
+    git(['worktree', 'remove', '--force', claim.worktree], { cwd: cfg.__root });
+    git(['worktree', 'prune'], { cwd: cfg.__root });
+  }
+  out(flags, { sha: rec.sha, handoff: rec }, `handoff ${rec.sha} posted: ${rec.from.runtime} → ${flags.to} (${flags.reason})`);
+  return EXIT.OK;
+});

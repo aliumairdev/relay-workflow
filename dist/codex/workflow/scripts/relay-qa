@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+// relay-qa list | next | done <pr> [--result pass|fail] [--map AC1=PASS --map AC2=FAIL:reason ...] [--proof <log/summary path>]
+// With issue contracts, QA maps its proof back to acceptance requirements: a pass without a mapping is refused, and a failure returns the issue to implementation.
+// The post-merge QA queue (.relay/qa-queue/<pr>.json, written by relay-quick-merge). `next` prints the brief for the QA agent.
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { relayDir } from '../lib/config.mjs';
+import { renderBrief } from '../lib/brief.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { closesIssue } from '../lib/issue.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import { iso, now } from '../lib/clock.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { result: { type: 'string' }, map: { type: 'string', multiple: true }, proof: { type: 'string' }, classification: { type: 'string' }, tier: { type: 'string' }, runtime: { type: 'string' } });
+  const { cfg, cp } = ctx();
+  const dir = path.join(relayDir(cfg), 'qa-queue');
+  const items = () => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))).sort((a, b) => a.pr - b.pr) : []);
+  const [cmd, arg] = args;
+  if (cmd === 'list') { const q = items(); out(flags, q, q.map((x) => `#${x.pr}${x.issue ? ` (issue #${x.issue})` : ''} ${x.branch}`).join('\n') || 'QA queue empty'); return EXIT.OK; }
+  if (cmd === 'next') {
+    const q = items();
+    if (!q.length) { out(flags, null, 'QA queue empty'); return EXIT.OK; }
+    const batch = q.map((x) => `#${x.pr}`).join(', ');
+    const { text } = renderBrief('post-merge-qa', { prs: batch, ref: cfg.project.default_branch, runtime: flags.runtime || 'claude', tier_name: flags.tier || 'implement', issue: String(q[0].issue || q[0].pr) }, cfg);
+    out(flags, { prs: q.map((x) => x.pr), brief: text }, text); return EXIT.OK;
+  }
+  if (cmd === 'done') {
+    const f = path.join(dir, `${Number(arg)}.json`);
+    if (!arg || !fs.existsSync(f)) throw new RelayError(`#${arg} is not in the QA queue`, EXIT.INVALID);
+    const queued = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const result = (flags.result || 'pass').toLowerCase();
+    if (!['pass', 'fail'].includes(result)) throw new RelayError('--result must be pass or fail', EXIT.INVALID);
+    let mapped = null;
+    const issue = queued.issue || (Ops.enforced(cfg) ? closesIssue(cp.getPR(Number(arg)).body) : null);
+    if (issue && Ops.enforced(cfg) && Ops.load(cp, issue)) {
+      const maps = (flags.map || []).map((m) => { const x = /^([A-Z]+\d+)=(PASS|FAIL|NOT_VERIFIED)(?::([\s\S]+))?$/i.exec(m); if (!x) throw new RelayError(`bad --map "${m}" (expected ID=PASS|FAIL|NOT_VERIFIED[:reason])`, EXIT.INVALID); return { id: x[1].toUpperCase(), status: x[2].toUpperCase(), why: x[3] }; });
+      const pr = Number(arg), cur = Ops.load(cp, issue).contract, entry = cur.prs.find((x) => x.pr === pr);
+      const covered = Object.entries(entry?.coverage || {}).filter(([, h]) => h === 'implemented').map(([id]) => id);
+      const missing = covered.filter((id) => !maps.some((m) => m.id === id) && !C.COMPLETE_STATUSES.includes(cur.requirements.find((r) => r.id === id)?.status));
+      if (missing.length) throw new RelayError(`QA must map its proof back to the acceptance requirements: no result for ${missing.join(', ')} (use --map ${missing[0]}=PASS|FAIL|NOT_VERIFIED[:reason] --proof <ref>)`, EXIT.INVALID);
+      if (result === 'pass' && maps.some((m) => m.status !== 'PASS')) throw new RelayError(`--result pass but ${maps.filter((m) => m.status !== 'PASS').map((m) => m.id).join(', ')} are ${maps.find((m) => m.status !== 'PASS').status}: record the run as --result fail`, EXIT.INVALID);
+      if (maps.some((m) => m.status === 'PASS') && !flags.proof) throw new RelayError('a PASS needs --proof <ref> (the proof summary/log the result comes from)', EXIT.INVALID);
+      const by = process.env.RELAY_AGENT_ID || 'qa';
+      await Ops.mutate(cp, cfg, issue, (contract) => {
+        let n = contract;
+        for (const m of maps) {
+          n = C.mark(n, m.id, m.status, { evidence: [{ kind: 'qa', ref: m.status === 'PASS' ? `post-merge QA PR #${pr}: ${flags.proof}` : `post-merge QA PR #${pr}: ${m.status}${m.why ? ` — ${m.why}` : ''}`, pr, at: iso(now()), by }, ...(m.status === 'PASS' ? [{ kind: 'runtime', ref: flags.proof, pr, at: iso(now()), by }] : [])], note: m.why, classification: flags.classification, by });
+        }
+        return C.setQA(n, pr, maps.some((m) => m.status === 'FAIL') || result === 'fail' ? 'fail' : maps.some((m) => m.status === 'NOT_VERIFIED') ? 'fail' : 'pass');
+      });
+      mapped = maps;
+      appendQuietly(cp, issue, { kind: 'proof', text: `post-merge QA PR #${pr}: ${maps.map((m) => `${m.id} ${m.status}${m.why ? ` (${m.why})` : ''}`).join('; ')}`.slice(0, 1100), agent_id: by, reqs: maps.map((m) => m.id) });
+      fs.rmSync(f);
+      const after = await Ops.afterChange({ cp, cfg }, issue, { reason: `post-merge QA for PR #${pr}: ${result}`, by, announce: true });
+      const ev = after.ev || C.evaluate(Ops.load(cp, issue).contract, { requireAudit: false });
+      out(flags, { done: pr, result, issue, mapped: maps, closed: !!after.closed, evaluation: ev }, `QA #${arg}: ${result}. Issue #${issue}: contract ${ev.counts.complete}/${ev.counts.total}${after.closed ? ', all satisfied: issue closed' : ev.unresolved.length ? `, ISSUE REMAINS ACTIVE (${ev.unresolved.map((r) => `${r.id} ${r.status}`).join(', ')})` : ''}`);
+      return EXIT.OK;
+    }
+    fs.rmSync(f);
+    out(flags, { done: Number(arg), result, mapped }, `QA #${arg}: ${result} (removed from the queue)`); return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-qa list|next|done <pr>', EXIT.INVALID);
+});

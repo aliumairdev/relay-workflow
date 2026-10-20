@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+// relay-merge-stack <pr:issue>...   merge a stacked PR chain in order; stop at the first failure.
+// A conflict that exists only because the parent was squash-merged (main's file == parent branch's file) keeps the child's version.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { parsePair, mergeGated, withMergeLock, settleS } from '../lib/merge.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+// Merge main into the child branch in a temp worktree; returns {ok, conflicts:[files]}.
+function stackSync(cfg, cp, pr, child, parent) {
+  const root = cfg.__root, def = cfg.project.default_branch;
+  git(['fetch', 'origin', '--prune'], { cwd: root });
+  const W = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-stack-')); fs.rmSync(W, { recursive: true });
+  try {
+    if (git(['worktree', 'add', '-q', '--detach', W, `origin/${child}`], { cwd: root }).code !== 0) return { ok: false, conflicts: [], why: 'cannot check out child' };
+    if (git(['merge', '-q', '--no-edit', `origin/${def}`], { cwd: W }).code !== 0) {
+      const conflicts = [];
+      // Squash-induced = main's file equals the parent's file as the child saw it (at the child/parent fork point).
+      // Comparing with the parent's current tip would be wrong once the parent has been synced with main.
+      const fork = git(['merge-base', `origin/${child}`, `origin/${parent}`], { cwd: W }).stdout.trim() || `origin/${parent}`;
+      for (const f of git(['diff', '--name-only', '--diff-filter=U'], { cwd: W }).stdout.split('\n').filter(Boolean)) {
+        const same = git(['diff', '--quiet', fork, `origin/${def}`, '--', f], { cwd: W }).code === 0;
+        if (same) { git(['checkout', '--ours', '--', f], { cwd: W }); git(['add', '--', f], { cwd: W }); } else conflicts.push(f);
+      }
+      if (conflicts.length) { git(['merge', '--abort'], { cwd: W }); return { ok: false, conflicts }; }
+      if (git(['commit', '-q', '--no-edit'], { cwd: W }).code !== 0) { git(['merge', '--abort'], { cwd: W }); return { ok: false, conflicts: [], why: 'commit failed' }; }
+    }
+    return git(['push', '-q', 'origin', `HEAD:refs/heads/${child}`], { cwd: W }).code === 0 ? { ok: true, conflicts: [] } : { ok: false, conflicts: [], why: 'push failed' };
+  } finally { git(['worktree', 'remove', '--force', W], { cwd: root }); fs.rmSync(W, { recursive: true, force: true }); git(['worktree', 'prune'], { cwd: root }); }
+}
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { settle: { type: 'string' } });
+  if (!args.length) throw new RelayError('usage: relay-merge-stack <pr:issue>...', EXIT.INVALID);
+  let pairs; try { pairs = args.map(parsePair); } catch (e) { throw new RelayError(e.message, EXIT.INVALID); }
+  const c = ctx(), { cfg, cp } = c, results = [];
+  let code = EXIT.OK;
+  try {
+    await withMergeLock(cfg, async () => {
+      let prev = null;
+      for (const pair of pairs) {
+        const p = cp.getPR(pair.pr), br = p.head.ref;
+        if (prev && !flags['dry-run']) {
+          cp.setPRBase(pair.pr, cfg.project.default_branch);
+          const s = stackSync(cfg, cp, pair.pr, br, prev);
+          if (!s.ok) {
+            for (const f of s.conflicts) process.stdout.write(`  real conflict: ${f}\n`);
+            process.stdout.write(`#${pair.pr} STACK SYNC FAILED\n`); results.push({ ...pair, status: 'failed' }); code = EXIT.ERROR; return;
+          }
+        }
+        const r = await mergeGated(c, pair, { settle: settleS(flags.settle), emit: (l) => process.stderr.write(l + '\n'), dryRun: flags['dry-run'] });
+        results.push(r); process.stdout.write(r.line + '\n');
+        if (r.status !== 'merged' && r.status !== 'already') { code = EXIT.ERROR; return; }
+        prev = br;
+      }
+    });
+  } catch (e) { if (e.busy) throw new RelayError(e.message, EXIT.WAIT); throw e; }
+  if (flags.json) out(flags, results);
+  return code;
+});

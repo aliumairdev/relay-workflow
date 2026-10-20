@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// relay-lock acquire|release <name> [--stale-after S] [--pid P]   exit 0 acquired, 1 busy
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig, relayDir } from '../lib/config.mjs';
+import { acquire, release } from '../lib/lockfile.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { 'stale-after': { type: 'string' }, pid: { type: 'string' } });
+  const [cmd, name] = args;
+  if (!['acquire', 'release'].includes(cmd) || !name || !/^[\w.-]+$/.test(name)) throw new RelayError('usage: relay-lock acquire|release <name> [--stale-after S] [--pid P]', EXIT.INVALID);
+  const cfg = loadConfig({ optional: true });
+  const dir = path.join(cfg ? relayDir(cfg) : path.join(process.cwd(), '.relay'), 'locks');
+  const file = path.join(dir, `${name}.lock`);
+  // The CLI exits immediately, so the lock belongs to the caller (parent) unless --pid says otherwise.
+  const pid = flags.pid ? Number(flags.pid) : process.ppid;
+  if (cmd === 'release') { const ok = release(file, { pid }); out(flags, { released: ok }, ok ? 'released' : 'not held'); return EXIT.OK; }
+  const r = acquire(file, { staleAfterS: Number(flags['stale-after'] ?? 900), pid });
+  out(flags, r, r.acquired ? 'acquired' : `busy (held by pid ${r.holder?.pid ?? '?'})`);
+  return r.acquired ? EXIT.OK : EXIT.ERROR;
+});

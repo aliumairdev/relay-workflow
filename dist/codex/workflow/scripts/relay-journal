@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+// relay-journal post <issue> --kind K [--req AC1,AC2] (--text T | --from-file F) | read <issue> | check <issue> [--require plan,summary] [--final]
+// Entries may name issue-contract requirement ids (--req). `check` also validates the requirement-level trail; --final demands a complete contract.
+// Keeps one living "Implementation log" comment per issue. Every agent working an issue posts to it.
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { appendEntry, readLog, checkLog, requirementTrail, KINDS } from '../lib/journal.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { readState } from '../lib/state.mjs';
+import { git } from '../lib/exec.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { kind: { type: 'string' }, text: { type: 'string' }, 'from-file': { type: 'string' }, agent: { type: 'string' }, runtime: { type: 'string' }, sha: { type: 'string' }, require: { type: 'string' }, req: { type: 'string' }, final: { type: 'boolean' } });
+  const [cmd, arg] = args;
+  const issue = Number(arg);
+  if (!['post', 'read', 'check'].includes(cmd) || !issue) throw new RelayError(`usage: relay-journal post|read|check <issue> (kinds: ${KINDS.join(', ')})`, EXIT.INVALID);
+  const { cfg, cp } = ctx();
+
+  if (cmd === 'read') {
+    const log = readLog(cp, issue);
+    out(flags, log, log.entries.map((e) => `#${e.n} ${e.at} ${e.agent_id} ${e.kind}${e.reqs?.length ? ` [${e.reqs.join(',')}]` : ''}: ${e.text}`).join('\n') || 'no journal entries');
+    return EXIT.OK;
+  }
+  if (cmd === 'check') {
+    const req = (flags.require ? flags.require.split(',') : cfg.journal?.require || ['plan', 'summary']).map((s) => s.trim()).filter(Boolean);
+    const log = readLog(cp, issue);
+    const r = checkLog(log, req);
+    const problems = [];
+    let contract = null;
+    if (Ops.enforced(cfg)) {
+      const found = Ops.load(cp, issue);
+      if (found) {
+        contract = found.contract;
+        const ev = C.evaluate(contract, { requireAudit: false }), trail = requirementTrail(log);
+        for (const q of contract.requirements.filter((x) => !x.derived && C.COMPLETE_STATUSES.includes(x.status) && x.status !== 'EXPLICITLY_REMOVED_FROM_SCOPE')) if (!trail[q.id]) problems.push(`${q.id} is ${q.status} but no journal entry references it (post with --req ${q.id})`);
+        for (const id of Object.keys(trail)) if (!contract.requirements.some((x) => x.id === id)) problems.push(`journal references ${id}, which is not in the contract`);
+        if (flags.final && !ev.closable) problems.push(`contract incomplete (${ev.counts.complete}/${ev.counts.total}): ${[...ev.unresolved, ...ev.blocked].map((x) => x.id).join(', ')}`);
+      }
+    }
+    const ok = r.ok && !problems.length;
+    out(flags, { ...r, ok, required: req, contract_problems: problems }, ok ? `journal ok (${r.entries} entries)` : `journal incomplete: ${[r.missing.length ? `missing ${r.missing.join(', ')}` : '', ...problems].filter(Boolean).join('; ')}`);
+    return ok ? EXIT.OK : EXIT.INVALID;
+  }
+
+  const text = flags['from-file'] ? fs.readFileSync(flags['from-file'], 'utf8') : flags.text;
+  if (!flags.kind || !text) throw new RelayError('usage: relay-journal post <issue> --kind <kind> (--text "..." | --from-file f)', EXIT.INVALID);
+  const claim = readState(cfg).claims.find((c) => c.issue === issue);
+  const sha = flags.sha || git(['rev-parse', '--short=10', 'HEAD']).stdout.trim() || null;
+  const entry = { reqs: flags.req ? flags.req.split(',') : [], kind: flags.kind, text, agent_id: flags.agent || process.env.RELAY_AGENT_ID || claim?.agent_id || 'unknown', runtime: flags.runtime || claim?.runtime || null, head_sha: sha };
+  if (flags['dry-run']) { out(flags, { dry_run: true, entry }); return EXIT.OK; }
+  const e = appendEntry(cp, issue, entry);
+  out(flags, e, `journal #${e.n} (${e.kind}${e.reqs?.length ? ` ${e.reqs.join(',')}` : ''}) added to #${issue}`);
+  return EXIT.OK;
+});

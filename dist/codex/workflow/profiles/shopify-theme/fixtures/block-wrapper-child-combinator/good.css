@@ -1,0 +1,3 @@
+.product-blocks [data-block] {
+  display: grid;
+}

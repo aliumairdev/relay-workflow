@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "issue",
+    "from",
+    "to",
+    "reason",
+    "done",
+    "remaining",
+    "files_touched",
+    "tests_run",
+    "not_verified",
+    "decisions",
+    "next_steps",
+    "risks",
+    "links"
+  ],
+  "properties": {
+    "type": {
+      "const": "handoff"
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "from": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "runtime"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string"
+        }
+      }
+    },
+    "to": {
+      "type": "object",
+      "required": [
+        "runtime"
+      ],
+      "properties": {
+        "runtime": {
+          "enum": [
+            "claude",
+            "codex",
+            "gemini",
+            "human",
+            "blocked"
+          ]
+        }
+      }
+    },
+    "reason": {
+      "enum": [
+        "rate_limited",
+        "capability",
+        "review_rework",
+        "owner_request",
+        "lease_takeover"
+      ]
+    },
+    "done": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "remaining": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files_touched": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tests_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "cmd",
+          "result"
+        ],
+        "properties": {
+          "cmd": {
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail",
+              "not_run"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "not_verified": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "links": {
+      "type": "object",
+      "required": [
+        "branch",
+        "head_sha"
+      ],
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "pr": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "type": "string"
+        }
+      }
+    },
+    "previous": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sha": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+// relay-wait --pid P | --file F | --url U | --cmd C [--timeout S] [--interval S]   exit 0 met, 1 timeout
+// Never uses pgrep -f / ps matching, so it cannot match its own command line.
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { parse, out, run } from '../lib/cli.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { pid: { type: 'string' }, file: { type: 'string' }, url: { type: 'string' }, cmd: { type: 'string' }, timeout: { type: 'string' }, interval: { type: 'string' } });
+  const n = ['pid', 'file', 'url', 'cmd'].filter((k) => flags[k] !== undefined);
+  if (n.length !== 1) throw new RelayError('usage: relay-wait (--pid P | --file F | --url U | --cmd C) [--timeout S] [--interval S]', EXIT.INVALID);
+  const timeoutMs = Number(flags.timeout ?? 600) * 1000, every = Math.max(50, Number(flags.interval ?? 1) * 1000);
+  const check = async () => {
+    if (flags.pid) return !alive(Number(flags.pid));
+    if (flags.file) return fs.existsSync(flags.file);
+    if (flags.url) { try { const r = await fetch(flags.url, { signal: AbortSignal.timeout(5000) }); return r.ok; } catch { return false; } }
+    return spawnSync('sh', ['-c', flags.cmd], { stdio: 'ignore' }).status === 0;
+  };
+  const t0 = Date.now();
+  for (;;) {
+    if (await check()) { out(flags, { met: true, waited_ms: Date.now() - t0 }, 'condition met'); return EXIT.OK; }
+    if (Date.now() - t0 >= timeoutMs) { out(flags, { met: false, waited_ms: Date.now() - t0 }, 'timeout'); return EXIT.ERROR; }
+    await sleep(Math.min(every, Math.max(10, timeoutMs - (Date.now() - t0))));
+  }
+});

@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+// relay-codex-dispatch <issue> [--runtime codex]   dispatch an implementation run headlessly
+// relay-codex-dispatch --review <pr> [--runtime codex]   dispatch a reviewer run
+// Works for any runtime with exec_cmd in workflow.yaml. Exit: 0 done/fallback handled, 7 refused, 8 denied, 9 env error,
+// 10 wait (rate-limit backoff / load; prints retry_after_s), 11 deny, 1 agent failed.
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { dispatchIssue, dispatchReview } from '../lib/dispatch.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { runtime: { type: 'string' }, review: { type: 'string' } });
+  const { cfg, cp } = ctx();
+  const runtime = flags.runtime || 'codex';
+  if (flags.review ? !Number(flags.review) : !Number(args[0])) throw new RelayError('usage: relay-codex-dispatch <issue> [--runtime rt] | --review <pr>', EXIT.INVALID);
+  if (flags['dry-run']) { out(flags, { dry_run: true, runtime, target: flags.review ? { pr: Number(flags.review) } : { issue: Number(args[0]) } }); return EXIT.OK; }
+  const r = flags.review ? await dispatchReview(cfg, cp, { pr: Number(flags.review), runtime: flags.runtime || null }) : await dispatchIssue(cfg, cp, { issue: Number(args[0]), runtime: flags.runtime || null });
+  out(flags, r, `${r.outcome}${r.reason ? `: ${r.reason}` : ''}${r.retry_after_s ? ` (retry in ${r.retry_after_s}s)` : ''}${r.pr ? ` PR #${r.pr}` : ''}`);
+  return r.code;
+});

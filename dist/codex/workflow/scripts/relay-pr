@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// relay-pr open (--body-file F | --body T) [--title T] [--issue N] [--base B]
+// Opens the PR for the current branch through the control plane (no `gh` CLI needed). Runtime-neutral and token-light.
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { git } from '../lib/exec.mjs';
+import { lint } from '../lib/evidence.mjs';
+import { hasClosingKeyword, demoteClosingKeywords } from '../lib/issue.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { 'body-file': { type: 'string' }, body: { type: 'string' }, title: { type: 'string' }, issue: { type: 'string' }, base: { type: 'string' } });
+  if (args[0] !== 'open') throw new RelayError('usage: relay-pr open (--body-file F | --body T) [--title T] [--issue N] [--base B]', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+  const issue = Number(flags.issue || (/^agent\/[^/]+\/(\d+)-/.exec(branch) || [])[1]);
+  if (!branch || branch === 'HEAD' || branch === cfg.project.default_branch) throw new RelayError(`refused: not on a work branch (on "${branch}")`, EXIT.REFUSED);
+  let body = flags['body-file'] ? fs.readFileSync(flags['body-file'], 'utf8') : flags.body;
+  if (!body) throw new RelayError('a PR body is required: fill in the PR template (outcome, validation with real results, NOT_VERIFIED) and pass --body-file', EXIT.INVALID);
+  if (issue && !new RegExp(`\\b(?:closes|fixes|resolves|refs)\\s+#${issue}\\b`, 'i').test(body)) throw new RelayError(`the PR body must reference its issue: "Refs #${issue}" (a PR is a slice of the issue; Relay closes the issue only when its whole contract is satisfied)`, EXIT.INVALID);
+  // Issue contract: say truthfully which part of the issue this PR covers; closing keywords never close an incomplete issue.
+  let contract = null;
+  if (issue && Ops.enforced(cfg)) {
+    contract = (await Ops.refresh(cp, cfg, issue)).contract;
+    const bad = C.lintPR(body, contract);
+    if (bad.length) throw new RelayError(`PR body fails the contract coverage check for #${issue}:\n${bad.map((b) => `  [${b.rule}] ${b.message}`).join('\n')}`, EXIT.INVALID);
+    if (hasClosingKeyword(body)) {
+      const cov = C.parseCoverage(body);
+      const final = cfg.contract?.closing_keywords === 'final-pr-only' && cov?.completes_issue === true && !contract.requirements.some((r) => r.requires?.runtime_proof && !C.COMPLETE_STATUSES.includes(r.status));
+      if (!final) { body = demoteClosingKeywords(body); process.stderr.write(`note: closing keyword replaced by "Refs #${issue}": merging a PR never closes an issue; Relay closes it after the contract gate\n`); }
+    }
+  }
+  if (cfg.honesty?.evidence_lint !== false) { const bad = lint(body, { kind: 'pr' }); if (bad.length) throw new RelayError(`PR body fails the evidence lint: ${bad.map((b) => b.message).join('; ')}`, EXIT.INVALID); }
+  if (git(['ls-remote', '--exit-code', '--heads', 'origin', branch]).code !== 0) { const p = git(['push', '-u', 'origin', branch]); if (p.code !== 0) throw new RelayError(`push failed: ${p.stderr.trim().split('\n')[0]}`, EXIT.ENV); }
+  const existing = cp.listPRs('open').find((p) => (p.head?.ref || p.pull_request?.head?.ref) === branch);
+  if (existing) { out(flags, { number: existing.number, existing: true }, `PR #${existing.number} already open for ${branch}`); return EXIT.OK; }
+  if (flags['dry-run']) { out(flags, { dry_run: true, branch, issue }); return EXIT.OK; }
+  const title = flags.title || (issue ? `${cp.getIssue(issue).title}` : branch);
+  const pr = cp.createPR({ title, body, head: branch, base: flags.base || cfg.project.default_branch });
+  if (contract) { const cov = C.parseCoverage(body); await Ops.mutate(cp, cfg, issue, (cur) => C.recordOpenPR(cur, { pr: pr.number, branch, coverage: cov?.coverage || {}, completes_issue: cov?.completes_issue ?? null })); }
+  out(flags, { number: pr.number, url: pr.html_url, branch }, `opened PR #${pr.number} for ${branch}`);
+  return EXIT.OK;
+});

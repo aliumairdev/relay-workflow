@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+// PreToolUse(Bash): flag known-bad shell patterns (self-matching process lookups, bare git stash, unbounded sleep loops).
+import { guard, allow, deny, warn } from '../lib/hooklib.mjs';
+
+const BLOCK = [
+  [/\b(pgrep|pkill)\s+(-[a-zA-Z]*f|--full)\b/, '`pgrep -f` / `pkill -f` match their own command line and other agents\' processes. Use `relay-wait --pid <pid>` or a pidfile.'],
+  [/\bgit\s+stash(\s*(;|&&|\|\||$)|\s+(push|save|-u|--include-untracked|-k|--keep-index))/, 'Bare `git stash` hides work and collides across worktrees. Commit to your branch (WIP commit) instead.'],
+];
+const WARN = [
+  [/\b(while|until)\b[^\n]*\bsleep\b/, 'Sleep loop without a bound: wrap it with `timeout`, or use `relay-wait ... --timeout S`.'],
+];
+
+guard('brief-lint', (payload, cfg) => {
+  if (!cfg || payload.tool_name !== 'Bash') return allow();
+  const cmd = payload.tool_input?.command || '';
+  const b = BLOCK.filter(([re]) => re.test(cmd));
+  if (b.length) return deny(`brief-lint: ${b.map(([, m]) => m).join(' ')}`);
+  const w = WARN.filter(([re]) => re.test(cmd) && !/\btimeout\b|--timeout/.test(cmd));
+  if (w.length) return warn(`brief-lint: ${w.map(([, m]) => m).join(' ')}`);
+  allow();
+});

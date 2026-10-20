@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+// relay-resume [--brief] [--sweep] — rebuild orchestrator context after a restart/compaction (recovery order).
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { gather, renderBrief } from '../lib/status.mjs';
+import { EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { brief: { type: 'boolean' }, sweep: { type: 'boolean' } });
+  const { cfg, cp } = ctx();
+  let swept = null;
+  if (flags.sweep) {
+    const r = spawnSync(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'relay-lease'), 'sweep', '--json'], { encoding: 'utf8', env: process.env, cwd: cfg.__root });
+    try { swept = JSON.parse(r.stdout).expired; } catch { swept = []; }
+  }
+  const s = gather(cfg, cp);
+  const text = renderBrief(s) + (swept ? `\nSwept ${swept.length} expired lease(s).` : '');
+  out(flags, { ...s, swept }, text);
+  return EXIT.OK;
+});

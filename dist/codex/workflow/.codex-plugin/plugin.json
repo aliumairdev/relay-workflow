@@ -1,0 +1,23 @@
+{
+  "name": "workflow",
+  "version": "0.1.0",
+  "description": "Multi-agent build workflow: GitHub control plane, model routing, claims and handoffs across Claude and Codex, merge queue, real-environment proof.",
+  "author": {
+    "name": "aliumairdev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "multi-agent",
+    "workflow",
+    "github",
+    "codex",
+    "claude",
+    "model-routing"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Relay Workflow",
+    "shortDescription": "Multi-agent build workflow across Claude and Codex",
+    "category": "Productivity"
+  }
+}

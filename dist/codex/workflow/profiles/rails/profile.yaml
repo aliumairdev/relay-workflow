@@ -1,0 +1,35 @@
+stack: rails
+description: Ruby on Rails applications (template profile; lessons fill from experience).
+ci:
+  steps:
+    - { name: lint, cmd: "bundle exec rubocop" }
+    - { name: test, cmd: "bin/rails test" }
+    - { name: system, cmd: "bin/rails test:system" }
+  sync_steps: ["bin/rails test"]
+resolvers:
+  - { match: "db/schema.rb", strategy: keep-both }
+  - { match: "config/locales/*.yml", strategy: keep-both }
+  - { match: "**/*.md", strategy: union }
+environment:
+  name: staging
+  target_ref: "env:STAGING_TARGET"
+  base_url_ref: "env:STAGING_URL"
+  secrets: env
+proof:
+  pre_merge:
+    push: "bin/deploy staging --ref ${REF}"
+    probe_pages: ["/", "/up", "/login"]
+    error_signatures: ["Internal Server Error", "ActionView::Template::Error", "Missing translation"]
+  post_merge: { suite: quick, screenshots_max: 4, viewports: [375, 1440], modes: [light, dark] }
+risk:
+  hard_senior_paths: ["db/migrate/**"]
+  paths: ["app/models/**/payment*", "config/initializers/devise*", "app/controllers/**/sessions*", "config/routes.rb"]
+shared_append_only: ["config/locales/*.yml", "config/routes.rb"]
+destructive_patterns:
+  - { pattern: "rails\\s+db:(drop|reset|schema:load)\\b", reason: "dropping or resetting the database" }
+  - { pattern: "rake\\s+db:(drop|reset)\\b", reason: "dropping or resetting the database" }
+  - { pattern: "RAILS_ENV=production", reason: "running against production" }
+brief_rules:
+  profile_rules: "RAILS: follow the rails-backend, hotwire-frontend and tailwind-ui skills for the layer you change. Run migrations for real on a disposable database (schema load is not migration proof). Never edit an applied migration."
+skills: skills
+lessons: lessons.yaml

@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// relay-decision open <issue> --question Q --options a,b --default a --category C --contract-gap T --evidence T --unsafe-because T [--requirement ID] [--deadline D] [--who owner]
+// (the contract fields are required unless contract.mode is off: owner decisions are for product/authorization questions, never for "may I finish this issue?")
+// relay-decision list | resolve <decision-issue> --answer A
+// Parks a decision only the owner can make: creates an owner-decision issue, blocks the work item, releases its claim,
+// records the decision in STATE.json. Everything else keeps going; the Stop hook ignores owner decisions.
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx, actorClass } from '../lib/ctx.mjs';
+import { CORE } from '../lib/config.mjs';
+import { changeLabels } from '../lib/labelops.mjs';
+import { readState, updateState } from '../lib/state.mjs';
+import { runScript } from '../lib/scripts.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { question: { type: 'string' }, options: { type: 'string' }, default: { type: 'string' }, deadline: { type: 'string' }, who: { type: 'string' }, answer: { type: 'string' }, category: { type: 'string' }, requirement: { type: 'string' }, 'contract-gap': { type: 'string' }, evidence: { type: 'string' }, 'unsafe-because': { type: 'string' } });
+  const [cmd, arg] = args;
+  const { cfg, cp } = ctx();
+
+  if (cmd === 'list') {
+    const d = readState(cfg).owner_decisions || [];
+    out(flags, d, d.map((x) => `#${x.issue} ${x.question} [${(x.options || []).join('|')}] default ${x.default ?? 'none'}${x.blocks ? ` (blocks #${x.blocks})` : ''}`).join('\n') || 'no open owner decisions');
+    return EXIT.OK;
+  }
+
+  if (cmd === 'open') {
+    const work = Number(arg);
+    if (!work || !flags.question || !flags.options) throw new RelayError('usage: relay-decision open <issue> --question Q --options a,b [--default a] [--deadline D]', EXIT.INVALID);
+    const options = flags.options.split(',').map((s) => s.trim()).filter(Boolean);
+    if (options.length < 2) throw new RelayError('a decision needs at least two options', EXIT.INVALID);
+    if (Ops.modeOf(cfg) !== 'off') {
+      const problems = C.decisionProblems({ question: flags.question, options, default: flags.default, category: flags.category, contract_gap: flags['contract-gap'], evidence: flags.evidence, unsafe_because: flags['unsafe-because'] }, { requirement: flags.requirement });
+      if (problems.length) throw new RelayError(`owner decision rejected for #${work}:\n${problems.map((x) => `  - ${x}`).join('\n')}\nContinue the work: the issue contract is yours to complete (relay-contract show ${work}).`, EXIT.REFUSED);
+    }
+    if (flags.default && !options.includes(flags.default)) throw new RelayError(`--default must be one of: ${options.join(', ')}`, EXIT.INVALID);
+    const body = fs.readFileSync(path.join(CORE, 'templates/decision.md'), 'utf8')
+      .replace('<the single decision needed>', flags.question)
+      .replace(/- \*\*A\*\* — <consequence>\n- \*\*B\*\* — <consequence>/, options.map((o) => `- **${o}** — (state the consequence when you answer)`).join('\n'))
+      .replace('<option used if no answer by the deadline>', flags.default ?? 'none (work stays blocked until answered)')
+      .replace('<date or "none">', flags.deadline ?? 'none')
+      .replace('<owner>', flags.who ?? 'owner')
+      + (flags['contract-gap'] ? `\n\n## Why the issue contract does not answer this\n${flags['contract-gap']}\n\n## Evidence gathered\n${flags.evidence}\n\n## Why proceeding automatically is unsafe\n${flags['unsafe-because']}\n\n## Category\n${flags.category}${flags.requirement ? `\n\n## Requirement\n${flags.requirement} of #${work}` : ''}` : '')
+      + `\n\nBlocks: #${work}\n`;
+    if (flags['dry-run']) { out(flags, { dry_run: true, body }); return EXIT.OK; }
+    const dec = cp.createIssue({ title: `Decision: ${flags.question}`.slice(0, 120), body, labels: ['owner-decision', 'state:blocked'] });
+    const st = readState(cfg), claim = st.claims.find((c) => c.issue === work);
+    // A decision about ONE requirement parks that requirement only; the agent keeps working the rest of the contract.
+    const reqId = flags.requirement?.toUpperCase();
+    let contract = null;
+    if (Ops.enforced(cfg)) { try { contract = (await Ops.ensure(cp, cfg, work)).contract; } catch { /* legacy issue */ } }
+    if (contract) {
+      await Ops.mutate(cp, cfg, work, (cur) => C.linkDecision(cur, { issue: dec.number, requirement: reqId || null, category: flags.category, question: flags.question }));
+      const others = C.evaluate(Ops.load(cp, work).contract, { requireAudit: false }).unresolved.length;
+      cp.comment(work, `Owner decision #${dec.number} opened${reqId ? ` for ${reqId}` : ''}: ${flags.question} (category ${flags.category}; options: ${options.join(', ')}; recommended default ${flags.default}). ${reqId && others ? 'Other requirements continue.' : 'No other unresolved requirement remains: waiting.'} The issue is NOT complete.`);
+      appendQuietly(cp, work, { kind: 'blocker', text: `Owner decision #${dec.number} (${flags.category})${reqId ? ` blocks ${reqId}` : ''}: ${flags.question}`, agent_id: process.env.RELAY_AGENT_ID || claim?.agent_id || 'unknown', runtime: claim?.runtime, reqs: reqId ? [reqId] : [] });
+      await updateState(cfg, (s) => { s.owner_decisions = [...(s.owner_decisions || []), { issue: dec.number, blocks: work, question: flags.question, options, default: flags.default ?? null, deadline: flags.deadline ?? null, category: flags.category, requirement: reqId || null, nonblocking: !!(reqId && others) }]; });
+      if (reqId && others) { out(flags, { decision: dec.number, blocks: work, requirement: reqId, blocking: false }, `opened decision #${dec.number} for ${reqId}; #${work} stays active and the other ${others} requirement(s) continue`); return EXIT.OK; }
+    }
+    // block the work item and release any claim so the agent can take other work
+    if (claim) runScript(cfg, 'relay-lease', ['release', String(work), '--agent', claim.agent_id, '--reason', `waiting for owner decision #${dec.number}`]);
+    const actor = actorClass();
+    changeLabels(cp, cfg, work, { add: ['state:blocked', 'owner-decision'], actor: actor === 'human' ? 'human' : 'implementer' });
+    cp.comment(work, `Blocked on owner decision #${dec.number}: ${flags.question} (options: ${options.join(', ')}${flags.default ? `; default ${flags.default}` : ''}). Other work continues.`);
+    appendQuietly(cp, work, { kind: 'blocker', text: `Blocked on owner decision #${dec.number}: ${flags.question}`, agent_id: process.env.RELAY_AGENT_ID || claim?.agent_id || 'unknown', runtime: claim?.runtime });
+    if (!contract) await updateState(cfg, (s) => { s.owner_decisions = [...(s.owner_decisions || []), { issue: dec.number, blocks: work, question: flags.question, options, default: flags.default ?? null, deadline: flags.deadline ?? null }]; });
+    out(flags, { decision: dec.number, blocks: work }, `opened decision #${dec.number}; #${work} is blocked`);
+    return EXIT.OK;
+  }
+
+  if (cmd === 'resolve') {
+    const id = Number(arg);
+    const st = readState(cfg), d = (st.owner_decisions || []).find((x) => x.issue === id);
+    if (!id || !flags.answer) throw new RelayError('usage: relay-decision resolve <decision-issue> --answer A', EXIT.INVALID);
+    if (!d) throw new RelayError(`no open decision #${id} in STATE.json`, EXIT.INVALID);
+    if (!d.options.includes(flags.answer)) throw new RelayError(`answer must be one of: ${d.options.join(', ')}`, EXIT.INVALID);
+    if (actorClass() !== 'human') throw new RelayError('refused: only the owner (RELAY_ACTOR=human) resolves a decision', EXIT.REFUSED);
+    cp.comment(id, `Decided: ${flags.answer}`);
+    cp.closeIssue(id);
+    if (d.blocks && d.nonblocking) {
+      cp.comment(d.blocks, `Owner decision #${id} resolved: ${flags.answer}. ${d.requirement} is workable again.`);
+      appendQuietly(cp, d.blocks, { kind: 'decision', text: `Owner decided #${id}: ${flags.answer} (${d.question})`, agent_id: 'owner', reqs: d.requirement ? [d.requirement] : [] });
+    } else if (d.blocks) {
+      const labels = cp.getIssue(d.blocks).labels.filter((l) => l !== 'owner-decision' && !l.startsWith('handoff:') && !l.startsWith('state:'));
+      cp.setLabels(d.blocks, [...labels, 'state:ready']);
+      cp.comment(d.blocks, `Owner decision #${id} resolved: ${flags.answer}. Returned to the queue.`);
+      appendQuietly(cp, d.blocks, { kind: 'decision', text: `Owner decided #${id}: ${flags.answer} (${d.question})`, agent_id: 'owner' });
+    }
+    if (d.blocks && Ops.enforced(cfg)) { try { if (Ops.load(cp, d.blocks)) await Ops.mutate(cp, cfg, d.blocks, (cur) => C.resolveDecision(cur, id)); } catch { /* legacy issue */ } }
+    await updateState(cfg, (s) => { s.owner_decisions = (s.owner_decisions || []).filter((x) => x.issue !== id); });
+    out(flags, { resolved: id, answer: flags.answer }, `decision #${id} resolved: ${flags.answer}`);
+    return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-decision open|list|resolve', EXIT.INVALID);
+});

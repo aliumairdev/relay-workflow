@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+// relay-labels set <issue|pr> <label...> [--remove label ...] [--actor-class c] | lint [--fix] | ensure
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx, actorClass } from '../lib/ctx.mjs';
+import { changeLabels, lintIssue } from '../lib/labelops.mjs';
+import { CATALOG } from '../lib/labels.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { 'actor-class': { type: 'string' }, remove: { type: 'string', multiple: true }, fix: { type: 'boolean' } });
+  const [cmd, ...rest] = args;
+  const { cfg, cp } = ctx();
+  if (cmd === 'set') {
+    const [num, ...labels] = rest;
+    if (!/^\d+$/.test(num || '') || (!labels.length && !flags.remove?.length)) throw new RelayError('usage: relay-labels set <number> <label...> [--remove label] [--actor-class c]', EXIT.INVALID);
+    if (flags['dry-run']) { out(flags, { dry_run: true, add: labels, remove: flags.remove || [] }); return EXIT.OK; }
+    const r = changeLabels(cp, cfg, Number(num), { add: labels, remove: flags.remove || [], actor: actorClass(flags['actor-class']) });
+    out(flags, r, r.changed ? `labels: ${r.after.join(', ')}` : 'labels unchanged');
+    return EXIT.OK;
+  }
+  if (cmd === 'lint') {
+    const found = cp.listIssues({ state: 'open' }).map(lintIssue).filter(Boolean);
+    const fixed = [];
+    if (flags.fix) {
+      for (const f of found) {
+        cp.setLabels(f.number, f.repaired);
+        cp.comment(f.number, `relay-labels: repaired label violations (${f.violations.map((v) => `${v.rule}: ${v.labels.join(', ')}`).join('; ')}). Now: ${f.repaired.join(', ')}`);
+        fixed.push(f.number);
+      }
+    }
+    out(flags, { violations: found, fixed }, found.length ? found.map((f) => `#${f.number}: ${f.violations.map((v) => v.rule).join(', ')}${flags.fix ? ' (fixed)' : ''}`).join('\n') : 'labels clean');
+    return found.length && !flags.fix ? EXIT.ERROR : EXIT.OK;
+  }
+  if (cmd === 'ensure') {
+    const have = new Set(cp.listRepoLabels().map((l) => l.name));
+    const missing = CATALOG.labels.filter((l) => !have.has(l.name));
+    if (!flags['dry-run']) for (const l of missing) cp.createLabel(l);
+    out(flags, { created: missing.map((l) => l.name) }, `${flags['dry-run'] ? 'would create' : 'created'} ${missing.length} label(s)`);
+    return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-labels set|lint|ensure', EXIT.INVALID);
+});

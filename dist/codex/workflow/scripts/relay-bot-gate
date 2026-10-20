@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+// relay-bot-gate <pr> [--json]   count of unanswered bot review comments; exit 0 when 0, else 1
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { unanswered } from '../lib/botgate.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2));
+  if (!/^\d+$/.test(args[0] || '')) throw new RelayError('usage: relay-bot-gate <pr> [--json]', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+  const open = unanswered(cp, cfg, Number(args[0]));
+  out(flags, { count: open.length, comments: open }, String(open.length));
+  return open.length ? EXIT.ERROR : EXIT.OK;
+});

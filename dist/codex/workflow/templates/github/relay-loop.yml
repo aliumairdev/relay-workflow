@@ -1,0 +1,47 @@
+# Optional: dispatch headless-runtime issues when they are labelled, instead of (or besides) a polling `relay-loop`.
+# The workflow never merges: merging is the merge queue's job (relay-merge), run by the orchestrator.
+# Requires a self-hosted runner (or a runner image) that has git, gh, node 20+, the runtime CLI and its credentials.
+# Credentials come from repository secrets / the runner environment, never from this file.
+name: relay-loop
+on:
+  issues:
+    types: [labeled, closed]
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: Runtime to dispatch for
+        default: codex
+concurrency:
+  group: relay-loop-${{ github.event.issue.number || 'manual' }}
+  cancel-in-progress: false
+jobs:
+  # GitHub closed != contract complete: an issue closed outside Relay's gate is reconciled (reopened) when its contract is incomplete.
+  contract-guard:
+    if: github.event_name == 'issues' && github.event.action == 'closed' && contains(github.event.issue.labels.*.name, 'contract:open')
+    runs-on: [self-hosted, relay]
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconcile the closed issue
+        env:
+          GH_TOKEN: ${{ secrets.RELAY_GH_TOKEN || github.token }}
+        run: npx --yes relay-workflow contract reconcile "${{ github.event.issue.number }}"
+  dispatch:
+    if: (github.event_name == 'workflow_dispatch' || github.event.action == 'labeled') && (github.event_name == 'workflow_dispatch' || contains(github.event.label.name, 'state:ready') || startsWith(github.event.label.name, 'agent:'))
+    runs-on: [self-hosted, relay]
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run one dispatch pass
+        env:
+          GH_TOKEN: ${{ secrets.RELAY_GH_TOKEN || github.token }}
+          RELAY_RUNTIME: ${{ inputs.runtime || 'codex' }}
+        run: npx --yes relay-workflow loop --runtime "$RELAY_RUNTIME" --once --json
