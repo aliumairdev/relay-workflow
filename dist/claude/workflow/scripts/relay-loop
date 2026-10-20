@@ -39,6 +39,9 @@ run(async () => {
     else {
       const sw = runScript(cfg, 'relay-lease', ['sweep', '--json']);
       try { summary.swept = JSON.parse(sw.stdout).expired.length; } catch { /* sweep output is informational */ }
+      // GitHub closed != contract complete: reopen issues closed outside the contract gate so their work is dispatched again
+      const cs = runScript(cfg, 'relay-contract', ['sweep', '--json']);
+      try { summary.reconciled = JSON.parse(cs.stdout).map((x) => ({ issue: x.issue, action: x.action })); } catch { /* informational */ }
 
       const candidates = [...cp.listIssues({ labels: ['state:ready'] }), ...cp.listIssues({ labels: ['state:changes-requested'] }).filter((i) => i.labels.includes(`handoff:to-${rt}`))]
         .filter((i) => !i.labels.includes('owner-decision'))

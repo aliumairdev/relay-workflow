@@ -9,7 +9,7 @@ Arguments: $ARGUMENTS
 1. `relay-route <pr> --json`: it picks tier and a reviewer runtime different from the implementer when cross-review is on.
 2. If `packet_required`, build it: `relay-packet build --pr <n>` (exit 3 = over the word limit; shorten the named section).
 3. Render the review brief and review in a scratch worktree following the review-protocol skill. Run `relay-ci <branch>`.
-4. Post: `relay-verdict post <pr> --result APPROVED|CHANGES --checklist <json>`. Exit 7 means you are not an allowed reviewer for this PR.
+4. Post: `relay-verdict post <pr> --result APPROVED|CHANGES --checklist <json> --coverage <ID>=PASS|FAIL|NOT_COVERED ... --issue-complete YES|NO` (judge the PR and the truth of its contract coverage; ISSUE_COMPLETE=NO is a valid approval). Exit 7 means you are not an allowed reviewer for this PR.
 5. Log a `review` journal entry on the issue. Report result, numbered changes, NOT_VERIFIED items.
 
 Report only results you observed. Anything not run or not observable goes under NOT_VERIFIED with the reason.

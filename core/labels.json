@@ -273,6 +273,26 @@
       "name": "owner-decision",
       "color": "d4c5f9",
       "description": "Needs an owner decision"
+    },
+    {
+      "name": "contract:open",
+      "color": "d93f0b",
+      "description": "Issue contract active: unresolved requirements remain"
+    },
+    {
+      "name": "contract:blocked-external",
+      "color": "fbca04",
+      "description": "Only externally blocked requirements remain"
+    },
+    {
+      "name": "contract:closed-incomplete",
+      "color": "b60205",
+      "description": "GitHub closed but the issue contract is incomplete"
+    },
+    {
+      "name": "contract:complete",
+      "color": "0e8a16",
+      "description": "Issue contract complete and audited"
     }
   ]
 }

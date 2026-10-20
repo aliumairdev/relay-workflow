@@ -272,10 +272,13 @@ See diagram (l) in [WORKFLOW_DIAGRAMS.md](WORKFLOW_DIAGRAMS.md#l-cross-agent-lab
 | in-progress | review | claimant | PR open, local CI green |
 | review | changes-requested | reviewer | review:changes set |
 | changes-requested | in-progress | PR owner (original or reassigned) | fixes started |
-| review | done | merge queue only | PR merged and issue closed |
+| review | done | merge queue only | PR merged **and the issue contract passed the closure gate** (8.3); otherwise review → ready (contract incomplete) |
+| review | ready | merge queue, orchestrator | PR merged but contract requirements remain: the issue is active work again |
 | any | blocked | claimant, orchestrator, human | exact dependency or owner decision named |
 | blocked | ready | orchestrator, human | unblocked |
 | in-progress | (handoff pending) | claimant | handoff comment posted and `handoff:to-X` set (7.3) |
+
+Contract labels (informational; the contract comment is authoritative): `contract:open` (a contract exists and is incomplete), `contract:blocked-external` (only externally blocked requirements remain), `contract:closed-incomplete` (GitHub closed it, policy forbids reopening), `contract:complete` (audited and closed through the gate).
 
 ### 5.2 Who may set which label
 
@@ -478,19 +481,55 @@ Race outcome: at most one agent proceeds; the loser wastes only one comment. Tes
 | Everyone → Ledger | `relay-ledger append` | JSONL, lock-protected |
 | MCP clients → all of the above | MCP tools | section 15.3 |
 
+### 8.3 Issue ownership: the issue contract
+
+**Root cause of the old behaviour** (audit of the original design). Relay treated PR completion as issue completion at nine independent points, so no single prompt fix could work:
+
+| # | Where | Conflation |
+|---|---|---|
+| 1 | `merge.mjs` (`mergeGated`, `mergeFast`) | `closeIssueDone` ran unconditionally after every merge: `state:done` + close |
+| 2 | `relay-pr`, PR template, AGENTS template | forced `Closes #N` on every PR, so GitHub itself auto-closed the issue on merge |
+| 3 | `dispatch.mjs` | an agent that exited 0 with a PR was `done`; nothing tracked what the issue still required |
+| 4 | `relay-hook-stop`, `status.mjs` | work was counted by labels; a merged PR with unmet criteria is closed, so invisible |
+| 5 | `relay-journal check` | validated entry kinds only, not requirements |
+| 6 | `relay-verdict` | verdicts judged the PR, never the truth of what it claimed to cover |
+| 7 | `relay-qa done`, `proofissues.mjs` | removed a queue file / filed bugs without mapping proof to acceptance criteria |
+| 8 | `relay-decision` | any question was accepted, including "should I continue / open a follow-up?" |
+| 9 | status, dashboard, release audit | GitHub `closed` was accepted as truth |
+
+**Design.** `core/lib/contract.mjs` (pure model) and `core/lib/contractops.mjs` (control-plane effects) own the lifecycle; `relay-contract`, the MCP tools, hooks, briefs and agents are adapters over them.
+
+```
+ISSUE CONTRACT → CLAIM → PLAN → IMPLEMENT SLICE → PR → REVIEW → MERGE → PROOF
+   → CONTRACT RECONCILE → NEXT SLICE IF NEEDED → FINAL ACCEPTANCE AUDIT → CLOSE
+```
+
+- **Storage.** One living `relay:issue-contract` comment on the issue (schema `core/schemas/contract.schema.json`, `schema_version` 1, validated on every write), edited in place under a lock, exactly like the journal. Nothing is added to `STATE.json`, so existing state files keep working. Fields: issue, title, `rev`, `source` (fingerprint of title + body + amending comments, body sha, read time), requirements `{id, text, kind, origin, status, requires:{tests, runtime_proof}, evidence[], classification, blocker, decision}`, `scope_changes`, `prs[{pr, branch, coverage, completes_issue, qa}]`, `followups`, `decisions`, `drift.vanished`, `audit{rev}`.
+- **Extraction.** Headings Objective, Requirements, Acceptance Criteria / Done when, Validation, Runtime Proof, Reproduction, Consolidated give ids OBJ, R, AC, T, RP, REPRO, X. Comments headed "Updated acceptance" add requirements. Items mentioning production/runtime require runtime proof; test sections require test evidence. The objective is derived (satisfied exactly when everything else is). An issue with no parseable requirements still yields a title-derived requirement.
+- **Dispositions.** Complete: PASS, FIXED_AND_VERIFIED, VALID_TERMINAL_DISPOSITION (needs a quote that the issue itself allows it), EXPLICITLY_REMOVED_FROM_SCOPE (owner only: `RELAY_ACTOR=human`, a reference to an existing owner comment or an issue edit). EXTERNALLY_BLOCKED (exact blocker) parks a requirement: work continues on everything else; when only parked items remain the issue waits (`state:blocked`, `contract:blocked-external`) but is never complete. `relay-contract mark` refuses a complete status without the evidence the requirement demands; reproduction cases need a classification (fixed_by_change, independently_recovered, non_reproducible; `unexplained` never closes); notes like "works now, not sure why" or "moved to #N" are rejected.
+- **Drift.** Every read compares the fingerprint. New text becomes new TODO requirements (never silently discarded); text that vanished stays in the contract flagged until kept or descoped by the owner. `check` fails with DRIFT until `update`.
+- **Closure gate.** `relay-contract check` fails (exit 4) on: unresolved requirement, missing test evidence, missing runtime proof, drift, pending/failed post-merge QA, pending owner decision, GitHub closed with incomplete contract, or no final audit of the current `rev`. `close` = check → audit → close. `Closes #`-style keywords are rewritten to `Refs #` (`contract.closing_keywords: never`, default; `final-pr-only` keeps one only on a declared-final PR with no runtime-proof requirement outstanding).
+- **After a merge** (`afterMerge`/`settle`): parse the PR's "Contract Coverage", record the slice, add test evidence from the CI that just passed and review evidence from the verdict, promote a covered requirement to FIXED_AND_VERIFIED only when green CI + reviewer PASS + no runtime-proof/repro requirement; otherwise MERGED_NOT_VERIFIED/TESTS_ONLY. Then either close (gate passes), return the issue to `state:ready` and release the claim and worktree (work remains), or park it (only external items remain). Post-merge QA (`relay-qa done --map`) and proof failures update requirements and re-open implementation automatically. Slice N works on branch `…-sN`.
+- **PR semantics.** PR bodies carry `Refs #N`, a "Contract Coverage" section listing every unresolved requirement as implemented or not covered, and `Issue completion: YES|NO`; `relay-pr` and the merge queue lint it. Verdicts carry `CONTRACT_COVERAGE` and `ISSUE_COMPLETE`; approval is refused for false coverage claims, missing coverage, or a PR/review disagreement. ISSUE_COMPLETE=NO may be approved.
+- **Owner decisions.** `relay-decision open` (and the MCP tool) require category ∈ {product-ambiguity, destructive-production, external-provider, conflicting-requirements, scope-change, business-choice}, the question, why the contract does not answer it, evidence, options, a recommended default and why proceeding is unsafe; questions that ask permission to continue/finish/open a PR/follow-up, or technical choices, are rejected. With `--requirement ID` only that requirement is parked.
+- **GitHub closed ≠ complete.** `relay-contract reconcile|sweep` (also run by `relay-loop` and the optional `contract-guard` workflow job) detects closed issues that still carry `contract:open`: state `GITHUB_CLOSED_CONTRACT_INCOMPLETE`, shown first in status/dashboard, reopened (`reopen_on_incomplete`, default) or recorded as a release blocker. The Claude destructive-gate hook also denies `gh issue close` / `state=closed` API calls.
+- **Visibility.** Derived state per issue: IN_IMPLEMENTATION, IN_REVIEW, MERGED_AWAITING_PROOF, PARTIALLY_SATISFIED, BLOCKED_EXTERNAL, CONTRACT_COMPLETE, GITHUB_CLOSED_CONTRACT_INCOMPLETE; `relay-status` prints `Contract: 2/4 complete / PRs merged: 1 / Runtime proof: partial / Remaining: AC3, AC4`. The Stop hook blocks while a contract has unresolved non-external requirements, pending/failed QA or an unrun audit. `relay-contract release-audit` (release-blocking with `contract.release_blocking`) flags closed-incomplete issues, missing evidence, closed-with-NOT_VERIFIED and follow-ups that took over scope.
+- **Compatibility.** `contract.mode: enforce` (default) | `warn` (maintain contracts, warn, close as before) | `off` (legacy behaviour). First use on an existing issue bootstraps the contract from the live issue: ticked boxes and already-closed issues become UNCHECKED (history, not proof), no evidence is invented, and the owner reconciles explicitly.
+
 ### 8.2 Full lifecycle (sequence)
 
+0. Issue contract (8.3): claim/dispatch extracts the complete contract; everything below happens per slice.
 1. Plan: orchestrator (or `planner`, T2, only for initial decomposition) turns `docs/PRODUCT_SPEC.md` and ADRs into milestones and issues (Nexus: M1 to M5; later issue-update Haiku pass using the `issue-update.txt` brief).
 2. Triage: issue gets owner/role/runtime labels, priority, area, type; `state:ready`.
 3. Dispatch: router returns tier/model/runtime; governor admits (load, budget); brief rendered with injected rules; adapter dispatches.
 4. Claim → branch → worktree.
 5. Implement; run `relay-ci` (check, validate, test, budget; full mode adds e2e); UI issues must have read MASTER and page spec first.
-6. PR with template, `Closes #N`, evidence and NOT_VERIFIED; issue `state:review`; `review:<runtime>`.
+6. PR with template, `Refs #N`, Contract Coverage, evidence and NOT_VERIFIED; issue `state:review`; `review:<runtime>`.
 7. Review: bot comments arrive; routine reviewer in a scratch worktree; risk score decides second/senior review; verdict posted.
 8. Rework loop until approved or `max_rounds` then escalate tier/reassign.
 9. Merge queue (section 9).
 10. Post-merge: preview refresh; QA agent runs the proof suite on main; defects become issues routed one tier higher when the cause was a miss.
-11. Handoff file and STATE.json updated by the docs tier; issue closed as done only after merge; "verified" only after proof.
+11. Handoff file and STATE.json updated by the docs tier. A merge is one slice (8.3): the issue stays active and is redispatched until every contract requirement has a final disposition; it is closed as done only by the contract gate (final acceptance audit), and "verified" only after proof of each requirement. PR complete != issue complete; merged != verified; GitHub closed != contract complete.
 
 See diagrams (b), (c), (k) in [WORKFLOW_DIAGRAMS.md](WORKFLOW_DIAGRAMS.md).
 
@@ -499,6 +538,8 @@ See diagrams (b), (c), (k) in [WORKFLOW_DIAGRAMS.md](WORKFLOW_DIAGRAMS.md).
 ### 9.1 Observed gated pipeline (`merge.sh`)
 
 For each `pr:issue`: take lock (`mkdir ~/.nexus-orch/merge.lock`, retry every 10 s); skip if already merged; if behind main, `sync-pr.sh` (merge `origin/main` into the branch in the shared `probe` worktree, resolvers on conflict, `npm run validate && npm test` with one retry after 20 s, push); `local-ci.sh` (check, validate, test, budget; `LOCAL_CI_FULL=1` adds e2e scripts); `codex-open.sh` must print 0; `store-check.sh` (push the branch to a shared dev theme, require 0 theme errors, curl nine pages on a theme-dev server looking for "Liquid error", "Liquid syntax error", "translation missing"); post `MAIN REVIEW … APPROVED`, swap labels to `review:approved`; `gh pr merge --squash`; issue labels to `state:done` and close; refresh the preview theme (kill and restart theme dev on port 9292).
+
+Contract-era change: after the squash merge the queue no longer closes the issue. It records the slice in the issue contract and either closes (gate passed), keeps the issue active (`state:ready`) or parks it (8.3). Gated merges also require the PR's Contract Coverage lint and a verdict with CONTRACT_COVERAGE.
 
 Observed flaws and fixes:
 

@@ -37,6 +37,7 @@ relay/
     briefs/                           orchestrator.md dispatch.md review.md high-risk-review.md docs.md
                                       fixmerge.md issue-update.md proof.md post-merge-qa.md handoff.md
                                       token-rules.md codex-rules.md worktree-safety.md honesty.md security.md
+                                      ownership.md (issue = complete work contract; injected into every issue-facing brief)
     scripts/                          relay-* (POSIX sh / Node 20)
     resolvers/                        md-union.mjs json-deep-merge.mjs line-union.mjs keep-both.mjs
     labels.json                       full label set with colours and descriptions
@@ -185,6 +186,7 @@ Commands are Markdown files with frontmatter `description` and optional `allowed
 | `/workflow:route` | `<issue|pr> [--explain] [--tier T] [--runtime R] [--reason text]` | Explain or override the chosen model/tier/runtime; writes label `route:T*` and ledger entry | `relay-route` |
 | `/workflow:report` | `[--since 7d]` | Cost per merged PR, tier mix, rework by tier, proposals | `relay-report` |
 | `/workflow:doctor` | `[--fix]` | Self-check (section 12.3) | `relay-doctor` |
+| `/workflow:contract` | `show|check|update|mark|close|reconcile|sweep <issue>` | The issue contract (complete work contract of an issue) and its closure gate (section 9.3) | `relay-contract`, `relay-journal` |
 
 ## 6. Hooks
 
@@ -364,6 +366,8 @@ relay-governor report [--since 7d]     # alias of relay-report
 
 ### 9.2 Interfaces
 
+Issue ownership (details in ARCHITECTURE 8.3 and section 9.3 below): `relay-contract extract|show|update|check|mark|descope|reconcile|followup|pr-section|lint-pr|audit|close|sweep|release-audit <issue>`. `check` exits 0 only when the whole contract is satisfied (4 = closure denied, 3 invalid, 7 refused owner-only action). `relay-pr` requires `Refs #N` plus Contract Coverage; `relay-verdict post ... --coverage ID=PASS|FAIL|NOT_COVERED --issue-complete YES|NO`; `relay-qa done <pr> --result pass|fail --map ID=PASS|FAIL|NOT_VERIFIED[:why] --proof <ref>`; `relay-journal post ... --req AC1,AC2` and `check [--final]`; `relay-decision open ... --category C --contract-gap T --evidence T --unsafe-because T [--requirement ID]`; `relay-merge` output `#pr MERGED (issue #n) — contract x/y complete, issue stays active (remaining ...)|issue closed`.
+
 `relay-claim <issue> --agent <id> --runtime <rt> [--role N] [--owned "<glob,glob>"] [--ack-handoff <sha>] [--lease-min 30]`
 Outputs claim JSON. Exit 0 claimed; 7 refused (already claimed, overlap, handoff not acknowledged, wrong owner label); 9 control-plane error.
 
@@ -412,6 +416,17 @@ Outputs claim JSON. Exit 0 claimed; 7 refused (already claimed, overlap, handoff
 `relay-report [--since D] [--json]` and `relay-loop [--runtime codex] [--interval 300]` : poller that dispatches ready issues labelled for a headless runtime.
 
 `relay-codex-dispatch <issue>` : renders brief for runtime codex, creates worktree, runs the configured headless command (e.g. `codex exec` with the prompt file; flags from `runtimes.codex.exec_args`), captures output, appends ledger row, exits with agent status.
+
+### 9.3 Issue contract lifecycle contract (all runtimes)
+
+Every runtime (Claude plugin, Codex/Gemini headless via `relay-loop`, Cursor/Copilot via `AGENTS.md` rules, any MCP client) follows the same semantics because the logic lives only in `core/lib/contract.mjs` and `core/lib/contractops.mjs`:
+
+1. Extract at claim/dispatch; include the contract in the brief (`relay-contract show <issue> --brief`).
+2. PR = slice: `Refs #N`, Contract Coverage, `Issue completion: YES|NO`. Reviewer verdict states CONTRACT_COVERAGE and ISSUE_COMPLETE.
+3. Merge records the slice; the issue stays active (`state:ready`, `contract:open`) while requirements remain, is parked when only external blockers remain, and is closed only by the gate (check, final audit, close).
+4. QA/proof map results to requirement ids; failures reopen implementation.
+5. GitHub-closed issues with incomplete contracts are reconciled (`relay-contract sweep`) and shown as `GITHUB_CLOSED_CONTRACT_INCOMPLETE`.
+6. Hooks: the Stop hook blocks while unresolved non-external requirements, pending/failed QA or an unrun audit remain; the destructive gate denies `gh issue close` and `state=closed` API calls outside `relay-contract close`.
 
 ## 10. workflow.yaml
 
@@ -511,6 +526,7 @@ security:
 telemetry: off
 brief_rules: [token-rules, codex-rules, worktree-safety, honesty, security]
 honesty: {require_not_verified: true, evidence_lint: true, mutation_check_paths: ["tests/fixtures/"]}
+contract: {mode: enforce, closing_keywords: never, reopen_on_incomplete: true, release_blocking: false}   # mode: enforce | warn | off
 notifications: {owner_decisions: status_only}
 ```
 
@@ -571,13 +587,14 @@ Guarantees: idempotent; `--dry-run` prints unified diffs and writes nothing; exi
 | Secrets | repo and docs scan clean; no secret in STATE.json or ledger | block |
 | Worktrees | none inside main checkout; stale worktrees listed | prune |
 | Compat | versions meet matrix (section 14) | upgrade hint |
-| MCP | server starts and lists 8 tools (if registered) | |
+| MCP | server starts and lists every tool, including `issue_contract` and `contract_mark` (if registered) | |
+| Contract | `contract.mode` is valid; labels `contract:*` exist | |
 
 Exit 0 all pass, 1 warnings, 3 failures.
 
 ## 13. MCP server
 
-Stdio server `relay-mcp` exposing eight tools; input/output schemas are the JSON schemas in `core/schemas/mcp/*.json`. Tool-to-script mapping: `claim_issue`→`relay-claim`, `release_claim`→`relay-lease release`, `handoff`→`relay-handoff post`, `route_model`→`relay-route --json`, `run_local_ci`→`relay-ci`, `enqueue_merge`→`relay-merge` or `relay-quick-merge` by mode, `record_usage`→`relay-ledger append`, `owner_decision`→`relay-decision open`. The server is a thin wrapper (no logic of its own) so behaviour is identical across invocations. Authentication: inherits the invoking user's `gh` credentials; no tokens are stored. Registration snippet (Claude Code `.mcp.json` example):
+Stdio server `relay-mcp` exposing ten tools (the contract gate included, so no runtime can bypass it); input/output schemas are the JSON schemas in `core/schemas/mcp/*.json`. Tool-to-script mapping: `claim_issue`→`relay-claim`, `release_claim`→`relay-lease release`, `handoff`→`relay-handoff post`, `route_model`→`relay-route --json`, `run_local_ci`→`relay-ci`, `enqueue_merge`→`relay-merge` or `relay-quick-merge` by mode, `record_usage`→`relay-ledger append`, `owner_decision`→`relay-decision open` (requires category, contract_gap, evidence, unsafe_because, default), `issue_contract`→`relay-contract <action>` (extract|show|update|check|reconcile|audit|close|sweep|pr_section|release_audit), `contract_mark`→`relay-contract mark`. The server is a thin wrapper (no logic of its own) so behaviour is identical across invocations. Authentication: inherits the invoking user's `gh` credentials; no tokens are stored. Registration snippet (Claude Code `.mcp.json` example):
 
 ```json
 { "mcpServers": { "relay": { "command": "npx", "args": ["-y", "relay-workflow", "mcp"] } } }

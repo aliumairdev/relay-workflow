@@ -76,6 +76,7 @@ export function withDefaults(c) {
     ci: { mode: 'local', retry_once_on_fail: true, steps: [], ...c.ci },
     bot: { gate: false, logins: [], require_reply_from_non_bot: true, ...c.bot },
     labels: { aliases: {}, ...c.labels },
+    contract: { mode: 'enforce', closing_keywords: 'never', reopen_on_incomplete: true, release_blocking: false, ...c.contract },
     concurrency: { max_agents: 8, hard_max: 20, load_limit_factor: 1.5, heavy_slots: 2, ...c.concurrency },
   };
 }

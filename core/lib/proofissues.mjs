@@ -3,6 +3,8 @@ import { appendQuietly } from './journal.mjs';
 import { TIERS } from './router.mjs';
 import { closesIssue } from './issue.mjs';
 import path from 'node:path';
+import * as C from './contract.mjs';
+import * as Ops from './contractops.mjs';
 
 // Tier of the work that introduced a defect, raised by one (capped at T2): the next dispatch is routed higher.
 export function nextTierFor(cfg, { issue, pr }) {
@@ -29,6 +31,16 @@ export async function raiseOnProofFailure(cfg, cp, result, { ref, issue = null, 
       cp.comment(issue, `Real-environment proof failed after this work (${result.stage} @ ${String(ref).slice(0, 12)}): ${it.name}. Bug filed as #${bug.number}, routed ${tier}.`);
       appendQuietly(cp, issue, { kind: 'blocker', text: `Proof failure ${it.name}: filed #${bug.number} (route ${tier}). ${it.evidence.split('\n')[0]}`.slice(0, 1100), agent_id: 'relay-proof' });
     }
+  }
+  // A proof failure means the work is not verified: the owning issue goes back to implementation (never stays "merged = done").
+  if (issue && created.length && Ops.enforced(cfg)) {
+    try {
+      const cur = Ops.load(cp, issue)?.contract;
+      if (cur) {
+        await Ops.mutate(cp, cfg, issue, (c) => { let n = c; for (const p of c.prs.filter((x) => x.merged && (pr == null || x.pr === pr))) n = C.setQA(n, p.pr, 'fail'); return n; });
+        await Ops.afterChange({ cp, cfg }, issue, { reason: `proof failed (${result.stage})`, by: 'relay-proof', announce: true });
+      }
+    } catch (e) { process.stderr.write(`warning: contract not updated after proof failure (${e.message})\n`); }
   }
   return created;
 }

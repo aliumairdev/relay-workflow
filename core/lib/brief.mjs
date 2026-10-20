@@ -5,13 +5,15 @@ import { CORE } from './config.mjs';
 import { RelayError, EXIT } from './exit.mjs';
 
 const RULE_FILES = ['token-rules', 'codex-rules', 'worktree-safety', 'honesty', 'security'];
+// Briefs about work on an issue carry the ownership contract (issue = complete work contract; PR = slice).
+const OWNERSHIP_BRIEFS = ['dispatch', 'review', 'high-risk-review', 'handoff', 'fixmerge', 'post-merge-qa'];
 // Briefs for work on an issue always carry the journal rule (not optional via brief_rules).
 const JOURNAL_BRIEFS = ['dispatch', 'review', 'high-risk-review', 'handoff', 'fixmerge', 'docs', 'proof', 'post-merge-qa'];
 const read = (rel) => fs.readFileSync(path.join(CORE, rel), 'utf8').replace(/\s+$/, '');
 export const briefNames = () => fs.readdirSync(path.join(CORE, 'briefs')).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3));
 
 const OPTIONAL = {
-  profile_rules: '', profile_review_gate: '', preclaimed_note: '', issue_text: '(read it with `gh issue view`)', delta_note: '', handoff_ack: '', resolver_hints: 'resolve conflicts with `relay-resolve`',
+  issue_contract: '(read the contract with `relay-contract show <issue>`: it lists every accepted requirement you own)', profile_rules: '', profile_review_gate: '', preclaimed_note: '', issue_text: '(read it with `gh issue view`)', delta_note: '', handoff_ack: '', resolver_hints: 'resolve conflicts with `relay-resolve`',
   forbidden_paths: '(none declared)', owned_paths: '(see issue)', report_max_words: '120', packet_max_words: '500',
   escalate_after: '2', recheck_minutes: '3', screenshots_max: '4', viewports: '375, 1440', modes: 'light, dark',
 };
@@ -50,7 +52,7 @@ export function renderBrief(name, userVars = {}, cfg = null) {
   const missing = new Set();
   const parts = [fill(read(`briefs/${name}.md`), vars, missing)];
   const rules = cfg?.brief_rules || RULE_FILES;
-  const mainOnly = [...RULE_FILES, 'journal'].includes(name);
+  const mainOnly = [...RULE_FILES, 'journal', 'ownership'].includes(name);
   if (!mainOnly) {
     for (const r of rules) {
       if (r === 'codex-rules' && !vars.bot_logins) continue;
@@ -58,6 +60,7 @@ export function renderBrief(name, userVars = {}, cfg = null) {
       parts.push(fill(read(`briefs/${r}.md`), { branch: '<branch>', issue: '<N>', runtime: vars.runtime || '<runtime>', ...vars }, missing));
     }
     if (JOURNAL_BRIEFS.includes(name) && 'issue' in vars) parts.push(fill(read('briefs/journal.md'), vars, missing));
+    if (OWNERSHIP_BRIEFS.includes(name) && 'issue' in vars) parts.push(fill(read('briefs/ownership.md'), vars, missing));
     const rt = vars.runtime;
     if (rt && fs.existsSync(path.join(CORE, `adapters/runtime/${rt}/wrapper.md`))) parts.push(read(`adapters/runtime/${rt}/wrapper.md`));
   }

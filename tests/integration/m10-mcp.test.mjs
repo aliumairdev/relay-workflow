@@ -14,13 +14,13 @@ function client(sb) {
   return { rpc, call, close: () => p.kill() };
 }
 
-test('T-MCP-2: initialize, eight tools with schemas, input validation rejects bad calls', async () => {
+test('T-MCP-2: initialize, every tool has a schema, input validation rejects bad calls', async () => {
   const sb = makeSandbox(); const c = client(sb);
   try {
     const init = await c.rpc('initialize', { protocolVersion: '2024-11-05' });
     assert.equal(init.result.serverInfo.name, 'relay');
     const tools = (await c.rpc('tools/list')).result.tools;
-    assert.deepEqual(tools.map((t) => t.name).sort(), ['claim_issue', 'enqueue_merge', 'handoff', 'owner_decision', 'record_usage', 'release_claim', 'route_model', 'run_local_ci']);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ['claim_issue', 'contract_mark', 'enqueue_merge', 'handoff', 'issue_contract', 'owner_decision', 'record_usage', 'release_claim', 'route_model', 'run_local_ci']);
     assert.ok(tools.every((t) => t.inputSchema.type === 'object' && t.description));
     const missing = await c.call('claim_issue', { issue: 1 });
     assert.ok(missing.isError); assert.match(missing.text, /required property/);
@@ -58,7 +58,9 @@ test('T-MCP-1: a client with no Claude/Codex specifics runs claim -> handoff -> 
     assert.ok(!u.isError, u.text);
     assert.ok(!(await c.call('record_usage', { run_id: 'r2', runtime: 'codex', tier: 'T9', task_class: 'x', outcome: 'done' })).isError === false, 'bad tier rejected');
 
-    const d = await c.call('owner_decision', { issue: n, question: 'Which name?', options: ['A', 'B'], default: 'A' });
+    const bare = await c.call('owner_decision', { issue: n, question: 'Which name?', options: ['A', 'B'], default: 'A' });
+    assert.ok(bare.isError && /category/.test(bare.text), 'the contract fields are required over MCP too');
+    const d = await c.call('owner_decision', { issue: n, question: 'Which public product name should the launch use?', options: ['A', 'B'], default: 'A', category: 'business-choice', contract_gap: 'The issue asks for a launch name but gives no candidates or criteria; both are valid business outcomes', evidence: 'searched the issue, docs/PRODUCT_SPEC.md and comments: no name is specified', unsafe_because: 'a public product name is brand-defining and costly to reverse' });
     assert.ok(!d.isError, d.text);
     assert.ok(labels().includes('state:blocked'));
 
@@ -72,5 +74,28 @@ test('T-MCP-1: a client with no Claude/Codex specifics runs claim -> handoff -> 
     const kinds = sb.comments(n).flatMap((x) => [...x.body.matchAll(/<!-- relay:([a-z-]+) /g)].map((m) => m[1]));
     assert.deepEqual(kinds.filter((k) => ['claim', 'handoff', 'release'].includes(k)), ['claim', 'handoff', 'release', 'claim', 'release']);
     assert.equal(sb.state().claims.length, 0);
+  } finally { c.close(); sb.cleanup(); }
+});
+
+test('T-MCP-CONTRACT: generic MCP clients get the same contract gate (extract, mark with evidence rules, check, close denied)', async () => {
+  const sb = makeSandbox(); const c = client(sb);
+  try {
+    sb.patchConfig((t) => t.replace('contract: { mode: off }', 'contract: { mode: enforce }'));
+    const n = seedIssue(sb, { title: 'Via MCP', body: '## Acceptance Criteria\n- [ ] one\n- [ ] two (verify in production)\n', labels: ['state:ready', 'agent:any'] });
+    const ex = await c.call('issue_contract', { action: 'extract', issue: n });
+    assert.ok(!ex.isError, ex.text); assert.deepEqual(ex.json().contract.requirements.map((r) => r.id), ['AC1', 'AC2']);
+    const none = await c.call('contract_mark', { issue: n, ids: ['AC1'], status: 'PASS' });
+    assert.ok(none.isError); assert.match(none.text, /no evidence/);
+    assert.ok(!(await c.call('contract_mark', { issue: n, ids: ['AC1'], status: 'PASS', evidence: ['test:npm test → 1 pass'] })).isError);
+    const tests = await c.call('contract_mark', { issue: n, ids: ['AC2'], status: 'PASS', evidence: ['test:npm test → 1 pass'] });
+    assert.ok(tests.isError); assert.match(tests.text, /TESTS_ONLY/);
+    const chk = await c.call('issue_contract', { action: 'check', issue: n });
+    assert.ok(chk.isError); assert.match(chk.text, /exit 4/);
+    const close = await c.call('issue_contract', { action: 'close', issue: n });
+    assert.ok(close.isError, 'closure is denied over MCP as well'); assert.equal(sb.issue(n).state, 'open');
+    assert.ok(!(await c.call('contract_mark', { issue: n, ids: ['AC2'], status: 'PASS', evidence: ['test:npm test → 1 pass', 'runtime:harness/proof/x.json 3/3 live'] })).isError);
+    assert.equal(sb.issue(n).state, 'closed', 'complete + audited: closed by the gate');
+    const rejected = await c.call('owner_decision', { issue: n, question: 'Should I continue with the rest or open a follow-up?', options: ['continue', 'follow-up'], default: 'continue', category: 'scope-change', contract_gap: 'x'.repeat(40), evidence: 'y'.repeat(30), unsafe_because: 'z'.repeat(40) });
+    assert.ok(rejected.isError); assert.match(rejected.text, /owner decision rejected/);
   } finally { c.close(); sb.cleanup(); }
 });

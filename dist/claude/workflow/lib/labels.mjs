@@ -14,7 +14,7 @@ export const TRANSITIONS = {
   ready: [T('claimed', 'implementer', 'orchestrator'), T('blocked', 'implementer', 'orchestrator', 'human'), T('backlog', 'orchestrator', 'human')],
   claimed: [T('in-progress', 'implementer', 'orchestrator'), T('ready', 'lease', 'orchestrator', 'implementer', 'human'), T('blocked', 'implementer', 'orchestrator', 'human')],
   'in-progress': [T('review', 'implementer', 'orchestrator'), T('ready', 'lease', 'orchestrator', 'implementer', 'human'), T('blocked', 'implementer', 'orchestrator', 'human')],
-  review: [T('changes-requested', 'reviewer', 'orchestrator'), T('done', 'merge'), T('blocked', 'implementer', 'orchestrator', 'human')],
+  review: [T('changes-requested', 'reviewer', 'orchestrator'), T('done', 'merge'), T('ready', 'merge', 'orchestrator'), T('blocked', 'implementer', 'orchestrator', 'human')],
   'changes-requested': [T('in-progress', 'implementer', 'orchestrator'), T('blocked', 'implementer', 'orchestrator', 'human')],
   blocked: [T('ready', 'orchestrator', 'human')],
   done: [],
@@ -30,6 +30,7 @@ const GROUP_RULES = [
   [/^route:|^risk:high$/, ['human', 'orchestrator', 'reviewer']],
   [/^(priority|area|type):/, ['human', 'orchestrator']],
   [/^owner-decision$/, ['human', 'orchestrator', 'implementer']],
+  [/^contract:/, ['human', 'orchestrator', 'implementer', 'reviewer', 'merge', 'governor', 'lease']],
 ];
 
 export function canon(name, aliases = {}) {

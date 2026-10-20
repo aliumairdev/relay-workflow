@@ -19,6 +19,8 @@ import { acquire, release } from './lockfile.mjs';
 import { relayDir } from './config.mjs';
 import { modelFor, DEFAULT_TIERS } from './agents.mjs';
 import { git } from './exec.mjs';
+import * as C from './contract.mjs';
+import * as Ops from './contractops.mjs';
 import { EXIT } from './exit.mjs';
 
 const rid = () => crypto.randomBytes(2).toString('hex');
@@ -104,6 +106,11 @@ async function dispatchIssueLocked(cfg, cp, n, wantRt) {
   if (wt.code !== 0) { await unwind(`worktree failed: ${wt.stderr.trim().slice(0, 120)}`); return result(EXIT.ENV, 'failed', { reason: wt.stderr.trim() }); }
   const dir = wt.json().path, branch = claim.branch;
 
+  // The issue is the complete work contract: extract (or refresh) it and put it in the brief.
+  let contractBlock = '';
+  if (Ops.enforced(cfg)) {
+    try { const { contract } = await Ops.refresh(cp, cfg, n); contractBlock = C.renderBlock(contract); } catch (e) { process.stderr.write(`warning: issue contract not extracted for #${n} (${e.message})\n`); }
+  }
   // Brief
   const role = (item.labels.map((l) => /^agent:([1-7])$/.exec(l)?.[1]).find(Boolean));
   const latestHandoff = handoffLabel ? handoffsOf(comments).at(-1) : null;
@@ -114,6 +121,7 @@ async function dispatchIssueLocked(cfg, cp, n, wantRt) {
     preclaimed_note: `The dispatcher already claimed #${n} for you (agent ${agent_id}) and created your worktree: skip relay-claim and relay-worktree create, run \`relay-worktree verify\` first.`,
     issue_text: `Title: ${item.title}\n\n${String(item.body || '(no body)').slice(0, 6000)}`,
     handoff_ack: latestHandoff ? ` --ack-handoff ${latestHandoff.sha}` : '',
+    ...(contractBlock ? { issue_contract: contractBlock } : {}),
   };
   let text = renderBrief('dispatch', vars, cfg);
   if (latestHandoff) text = renderBrief('handoff', { ...vars, from_runtime: latestHandoff.from.runtime, reason: latestHandoff.reason, handoff_sha: latestHandoff.sha }, cfg).text + '\n' + text.text;
@@ -142,7 +150,10 @@ async function dispatchIssueLocked(cfg, cp, n, wantRt) {
     }
     await gov.release(cfg, run_id); fs.rmSync(runFile, { force: true });
     await record(cfg, row, { pr: pr?.number ?? null, outcome: 'done' });
-    return result(EXIT.OK, 'done', { run_id, agent_id, pr: pr?.number ?? null, branch });
+    // The agent ending its run is not the issue ending: report what is left so the loop keeps the issue active.
+    let remaining = null;
+    if (Ops.enforced(cfg)) { try { const ev = C.evaluate(Ops.load(cp, n).contract, { requireAudit: false }); remaining = { complete: ev.counts.complete, total: ev.counts.total, unresolved: ev.unresolved.map((r) => r.id), blocked: ev.blocked.map((r) => r.id), next: ev.next }; } catch { /* no contract yet */ } }
+    return result(EXIT.OK, 'done', { run_id, agent_id, pr: pr?.number ?? null, branch, ...(remaining ? { contract: remaining, issue_complete: false } : {}) });
   }
 
   const fallbackTo = () => { const order = (cfg.runtime_policy?.fallback_order || enabledRuntimes(cfg)).filter((r) => enabledRuntimes(cfg).includes(r)); return order.find((r) => r !== runtime) || null; };
@@ -220,7 +231,10 @@ async function dispatchReviewLocked(cfg, cp, pr, wantRt) {
   const wt = runScript(cfg, 'relay-worktree', ['create', '--scratch', scratch, '--ref', branch, '--json']);
   if (wt.code !== 0) { await gov.release(cfg, run_id); return result(EXIT.ENV, 'failed', { reason: wt.stderr.trim() }); }
   const prior = verdicts.at(-1);
+  let reviewContract = '';
+  if (issue && Ops.enforced(cfg)) { try { reviewContract = C.renderBlock((await Ops.refresh(cp, cfg, issue)).contract); } catch { /* legacy issue */ } }
   const text = renderBrief('review', {
+    ...(reviewContract ? { issue_contract: reviewContract } : {}),
     pr: String(pr), issue: String(issue ?? '?'), branch, runtime, agent_id, tier_name: cfg.tiers?.[tier]?.name || DEFAULT_TIERS[tier]?.name || tier,
     delta_note: prior ? `Re-review ONLY the delta since the previous verdict (head ${prior.head_sha}); do not re-review unchanged files.` : '',
     ...(routed.decision.second_reviewer ? { profile_review_gate: 'This PR scored above the second-reviewer threshold: be explicit about every checklist item.' } : {}),

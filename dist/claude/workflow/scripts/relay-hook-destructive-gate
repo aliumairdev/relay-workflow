@@ -67,6 +67,11 @@ function analyse(cmd, cwd, cfg, depth = 0) {
       if (sub === 'clean' && rest.some((x) => /^-[a-zA-Z]*f/.test(x)) && top && !isInside(top, wtRoot)) hits.push('git clean -f outside a worktree');
       if (['filter-branch', 'filter-repo'].includes(sub) || (sub === 'update-ref' && rest.includes('-d'))) hits.push(`git ${sub} rewrites history`);
     }
+    if (cfg.contract?.mode !== 'off') {                           // GitHub closed != contract complete: only the contract gate closes issues
+      const closeIssue = t[0] === 'gh' && t[1] === 'issue' && t[2] === 'close';
+      const closeApi = t[0] === 'gh' && t[1] === 'api' && /issues\/\d+\/?(?:\s|$)/.test(seg) && /state\s*=\s*closed|"state"\s*:\s*"closed"/.test(seg);
+      if (closeIssue || closeApi) hits.push('closing an issue outside the contract gate (use `relay-contract close <issue>`; GitHub closed != contract complete)');
+    }
     if (t[0] === 'gh' && t[1] === 'repo' && t[2] === 'delete') hits.push('deleting a repository');
     if (t[0] === 'gh' && ['release', 'repo'].includes(t[1]) && t[2] === 'delete') hits.push(`gh ${t[1]} delete`);
     if (t[0] === 'rm') {

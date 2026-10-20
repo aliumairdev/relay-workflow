@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "issue-contract",
+  "type": "object",
+  "required": ["type", "schema_version", "issue", "title", "rev", "source", "requirements"],
+  "properties": {
+    "type": { "const": "issue-contract" },
+    "schema_version": { "const": 1 },
+    "issue": { "type": "integer" },
+    "title": { "type": "string" },
+    "rev": { "type": "integer", "minimum": 0 },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "bootstrap": { "type": "boolean" },
+    "source": {
+      "type": "object",
+      "required": ["fingerprint"],
+      "properties": {
+        "fingerprint": { "type": "string" },
+        "body_sha": { "type": "string" },
+        "issue_updated_at": { "type": ["string", "null"] },
+        "read_at": { "type": "string" },
+        "github_state": { "type": "string" },
+        "amendments": { "type": "array", "items": { "type": "integer" } },
+        "scope_proposals": { "type": "array", "items": { "type": "object", "required": ["id", "comment_id"], "properties": { "id": { "type": "string" }, "comment_id": { "type": "integer" } } } }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "kind", "origin", "status", "requires", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Z]+[0-9]*$" },
+          "text": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["objective", "requirement", "acceptance", "test", "runtime_proof", "repro", "consolidated", "amendment", "manual"] },
+          "origin": { "type": "string" },
+          "derived": { "type": "boolean" },
+          "status": { "enum": ["PASS", "FIXED_AND_VERIFIED", "VALID_TERMINAL_DISPOSITION", "EXPLICITLY_REMOVED_FROM_SCOPE", "EXTERNALLY_BLOCKED", "TODO", "UNCHECKED", "UNKNOWN", "NOT_PROVED", "NOT_VERIFIED", "NEEDS_INVESTIGATION", "NEEDS_DECISION", "TESTS_ONLY", "MERGED_NOT_VERIFIED", "FAIL"] },
+          "requires": { "type": "object", "properties": { "tests": { "type": "boolean" }, "runtime_proof": { "type": "boolean" } } },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "ref"],
+              "properties": { "kind": { "enum": ["test", "runtime", "review", "pr", "qa", "manual"] }, "ref": { "type": "string", "minLength": 1 }, "pr": { "type": "integer" }, "at": { "type": "string" }, "by": { "type": "string" } }
+            }
+          },
+          "classification": { "enum": ["fixed_by_change", "independently_recovered", "non_reproducible", "unexplained"] },
+          "note": { "type": "string" },
+          "cite": { "type": "string" },
+          "blocker": { "type": "object", "required": ["what"], "properties": { "what": { "type": "string" }, "needs": { "type": "string" }, "since": { "type": "string" } } },
+          "decision": { "type": "integer" },
+          "vanished": { "type": "boolean" },
+          "updated_at": { "type": "string" }
+        }
+      }
+    },
+    "scope_changes": { "type": "array", "items": { "type": "object", "required": ["id", "action", "at"], "properties": { "id": { "type": "string" }, "action": { "enum": ["removed", "kept"] }, "at": { "type": "string" }, "by": { "type": "string" }, "ref": { "type": "string" }, "reason": { "type": "string" } } } },
+    "prs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pr", "merged"],
+        "properties": {
+          "pr": { "type": "integer" },
+          "branch": { "type": "string" },
+          "merged": { "type": "boolean" },
+          "merged_at": { "type": "string" },
+          "head_sha": { "type": "string" },
+          "coverage": { "type": "object", "additionalProperties": { "enum": ["implemented", "not_covered"] } },
+          "completes_issue": { "type": ["boolean", "null"] },
+          "qa": { "enum": ["n/a", "pending", "pass", "fail", "waived"] },
+          "qa_at": { "type": "string" }
+        }
+      }
+    },
+    "followups": { "type": "array", "items": { "type": "object", "required": ["issue", "covers", "at"], "properties": { "issue": { "type": "integer" }, "covers": { "type": "array", "items": { "type": "string" } }, "at": { "type": "string" }, "reason": { "type": "string" } } } },
+    "decisions": { "type": "array", "items": { "type": "object", "required": ["issue", "category", "question"], "properties": { "issue": { "type": "integer" }, "requirement": { "type": ["string", "null"] }, "category": { "type": "string" }, "question": { "type": "string" }, "at": { "type": "string" } } } },
+    "drift": { "type": "object", "properties": { "vanished": { "type": "array", "items": { "type": "string" } } } },
+    "audit": { "type": ["object", "null"], "properties": { "rev": { "type": "integer" }, "at": { "type": "string" }, "by": { "type": "string" }, "note": { "type": "string" } } }
+  }
+}

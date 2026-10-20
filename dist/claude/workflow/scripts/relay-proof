@@ -6,6 +6,7 @@ import { parse, out, run } from '../lib/cli.mjs';
 import { ctx } from '../lib/ctx.mjs';
 import { runProof, writeSummary, STAGES } from '../lib/proof.mjs';
 import { raiseOnProofFailure } from '../lib/proofissues.mjs';
+import * as Ops from '../lib/contractops.mjs';
 import { EXIT, RelayError } from '../lib/exit.mjs';
 
 run(async () => {
@@ -16,6 +17,11 @@ run(async () => {
   const ref = flags.ref || 'HEAD';
   if (flags['dry-run']) { out(flags, { dry_run: true, stage, ref, suite }); return EXIT.OK; }
   const result = await runProof(cfg, { stage, ref, suite });
+  if (stage === 'release' && cfg.contract?.release_blocking && Ops.enforced(cfg)) {      // GitHub-closed-but-incomplete, missing evidence, stolen scope: release blockers
+    const findings = Ops.releaseAudit(cp);
+    result.items.push(findings.length ? { name: 'contract-consistency', status: 'fail', evidence: findings.map((f) => `[${f.code}] ${f.message}`).join('\n') } : { name: 'contract-consistency', status: 'pass', evidence: 'every contract-tracked issue is consistent' });
+    if (findings.length && result.exit === EXIT.OK) result.exit = EXIT.GATE_FAILED;
+  }
   const { dir, file } = writeSummary(cfg, result, { ref });
   result.summary = file;
   if ([EXIT.GATE_FAILED, EXIT.RENDER].includes(result.exit) && !flags['no-issues']) {

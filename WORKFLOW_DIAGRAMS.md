@@ -22,6 +22,7 @@ All diagrams are Mermaid. Elements labelled "NEW" are plugin design that did not
 - [n. Cost governor flow](#n-cost-governor-flow)
 - [o. Install and distribution pipeline](#o-install-and-distribution-pipeline)
 - [p. Runtime-neutral MCP tool architecture](#p-runtime-neutral-mcp-tool-architecture)
+- [q. Issue contract: complete issue ownership](#q-issue-contract-complete-issue-ownership)
 
 ---
 
@@ -94,7 +95,7 @@ flowchart TD
   W --> IMP["Implement"]
   IMP --> LCI{"Local CI green?<br/>check validate test budget"}
   LCI -->|no| IMP
-  LCI -->|yes| PR["Open PR<br/>Closes issue, review main"]
+  LCI -->|yes| PR["Open PR (one slice)<br/>Refs issue + Contract Coverage"]
   PR --> REV["Supervisor review<br/>plus Codex bot"]
   REV --> RISK{"High risk?"}
   RISK -->|yes| SEN["Senior review"]
@@ -103,13 +104,15 @@ flowchart TD
   V -->|changes| RW["Rework: resume builder<br/>SendMessage"]
   RW --> IMP
   V -->|approved| Q["Merge queue"]
-  Q --> M["Squash merge and close issue"]
-  M --> PM["Post-merge QA agent<br/>on main"]
+  Q --> M["Squash merge: records the slice,<br/>does NOT close the issue (diagram q)"]
+  M --> PM["Post-merge QA agent<br/>on main, mapped to requirements"]
   PM --> RP{"Real environment proof ok?"}
   RP -->|no| RC["Root cause first debugging<br/>new fix issue"]
   RC --> I
-  RP -->|yes| CL["Evidence logged<br/>STATE.json updated"]
-  CL --> DONE["Closed as verified"]
+  RP -->|yes| CL["Evidence logged per requirement"]
+  CL --> GATE{"Whole issue contract<br/>satisfied? (q)"}
+  GATE -->|no| I
+  GATE -->|yes| DONE["Final audit, then closed"]
 ```
 
 ## c. PR review sequence
@@ -243,7 +246,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   A["Agent needs an action"] --> C1{"Class"}
-  C1 -->|"names URLs passwords deletions publish"| OD["Owner decision queue"]
+  C1 -->|"names URLs passwords deletions publish<br/>product ambiguity, scope change<br/>(all six facts recorded; never 'may I finish?')"| OD["Owner decision queue"]
   OD --> OQ["Write decision request<br/>with options and default"]
   OQ --> WAIT["Mark blocked owner<br/>agent continues other work"]
   WAIT --> ANS["Owner answers"]
@@ -517,6 +520,8 @@ flowchart TB
     T6["enqueue_merge"]
     T7["record_usage"]
     T8["owner_decision"]
+    T9["issue_contract"]
+    T10["contract_mark"]
   end
   subgraph CORE["Shared core"]
     SC["scripts"]
@@ -531,4 +536,32 @@ flowchart TB
   SRV --> TOOLS
   TOOLS --> CORE
   AD --> GH["GitHub"]
+```
+
+## q. Issue contract: complete issue ownership
+
+PR complete != issue complete. Merged != verified. GitHub closed != contract complete.
+
+```mermaid
+flowchart TD
+  X["Claim / dispatch:<br/>extract the whole issue + amending comments<br/>into the issue contract"] --> PL["Plan the COMPLETE solution<br/>journal entries name requirement ids"]
+  PL --> SL["Implement one slice"]
+  SL --> PR["PR: Refs #N, Contract Coverage,<br/>Issue completion YES/NO"]
+  PR --> RV{"Review: PR correct AND<br/>coverage claim truthful?"}
+  RV -->|"false claim / scope moved"| SL
+  RV -->|"approved (ISSUE_COMPLETE may be NO)"| MG["Merge queue records the slice"]
+  MG --> PF["Proof: CI evidence, review evidence,<br/>post-merge QA mapped to ids"]
+  PF --> RC{"Contract reconcile:<br/>every requirement has a final disposition?"}
+  RC -->|"requirements remain"| RDY["Issue stays active: state:ready<br/>claim and worktree released"]
+  RDY -->|"orchestrator / relay-loop / Stop hook,<br/>no human needed"| CL["Next claim on slice branch -sN"]
+  CL --> SL
+  RC -->|"only EXTERNALLY_BLOCKED left"| WT["state:blocked + contract:blocked-external<br/>wait, NOT complete"]
+  WT -->|"blocker cleared"| RDY
+  RC -->|"all complete"| AU["Final acceptance audit<br/>(rev-bound)"]
+  AU --> CLS["relay-contract close<br/>state:done + contract:complete"]
+  GHC["Issue closed on GitHub<br/>(manual or Closes #)"] --> CK{"Contract complete?"}
+  CK -->|"no: GITHUB_CLOSED_CONTRACT_INCOMPLETE"| RO["Reopen (policy) or release blocker"]
+  RO --> RDY
+  ED["Issue edited mid-run"] --> DR["Drift: new requirements added as TODO,<br/>vanished ones flagged; closure denied"]
+  DR --> RC
 ```

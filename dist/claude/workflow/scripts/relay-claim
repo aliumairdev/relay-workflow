@@ -12,6 +12,8 @@ import { stateOf } from '../lib/labels.mjs';
 import { appendQuietly } from '../lib/journal.mjs';
 import { now, iso } from '../lib/clock.mjs';
 import { git } from '../lib/exec.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
 import { RelayError, EXIT } from '../lib/exit.mjs';
 
 const refuse = (m) => { throw new RelayError(`refused: ${m}`, EXIT.REFUSED); };
@@ -63,7 +65,11 @@ run(async () => {
   // Branch: continue the handed-off / previous branch when there is one
   const prevBranch = toMe ? latest?.links?.branch : a.last?.claim?.branch;
   const slug = flags.slug || slugify(issue.title);
-  const branch = prevBranch || branchName(cfg, { runtime, issue: issueNo, slug });
+  // A merged PR is a finished slice, not the issue: the next slice starts on a fresh branch from the default branch.
+  let known = null; if (Ops.enforced(cfg)) { try { known = Ops.load(cp, issueNo)?.contract ?? null; } catch { /* contract is created after the claim */ } }
+  const merged = (known?.prs || []).filter((x) => x.merged);
+  const baseBranch = branchName(cfg, { runtime, issue: issueNo, slug });
+  const branch = prevBranch && !(merged.some((x) => x.branch === prevBranch) && !toMe) ? prevBranch : merged.length && !toMe ? `${baseBranch}-s${merged.length + 1}` : (prevBranch || baseBranch);
 
   const leaseMin = Number(flags['lease-min'] ?? cfg.claims.lease_minutes);
   const claim = { type: 'claim', issue: issueNo, agent_id: agent, runtime, role: flags.role ?? null, branch, lease_minutes: leaseMin, claimed_at: iso(now()), owned_paths: owned, nonce: newNonce(), lease_until: leaseUntil(leaseMin) };
@@ -87,6 +93,15 @@ run(async () => {
   } catch (e) { process.stderr.write(`warning: STATE.json not updated (${e.message}); run relay-state rebuild\n`); }
   appendQuietly(cp, issueNo, { kind: 'claimed', text: `Claimed by ${agent} (${runtime}) on \`${branch}\`, lease ${leaseMin} min${latest && toMe ? `; continuing handoff ${latest.sha} from ${latest.from.runtime}` : ''}.`, agent_id: agent, runtime });
   const remoteHasBranch = git(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: cfg.__root }).code === 0;
-  out(flags, { ...claim, continuing: remoteHasBranch, handoff: latest ? { sha: latest.sha, from: latest.from } : null }, `claimed #${issueNo} as ${agent} on ${branch}${remoteHasBranch ? ' (continuing existing branch)' : ''}`);
+  let contractInfo = null;
+  if (Ops.enforced(cfg)) {
+    try {
+      const { contract } = await Ops.refresh(cp, cfg, issueNo);
+      const ev = C.evaluate(contract, { requireAudit: false });
+      contractInfo = { complete: ev.counts.complete, total: ev.counts.total, unresolved: ev.unresolved.map((r) => r.id), blocked: ev.blocked.map((r) => r.id), slice: merged.length + 1 };
+      if (!flags.json) process.stderr.write(`${C.renderBlock(contract, { ev })}\nYou own EVERY requirement above until each has an acceptable final disposition. Your PR is one slice, not the issue.\n`);
+    } catch (e) { process.stderr.write(`warning: issue contract not extracted (${e.message}); run \`relay-contract extract ${issueNo}\`\n`); }
+  }
+  out(flags, { ...claim, contract: contractInfo, continuing: remoteHasBranch, handoff: latest ? { sha: latest.sha, from: latest.from } : null }, `claimed #${issueNo} as ${agent} on ${branch}${remoteHasBranch ? ' (continuing existing branch)' : ''}`);
   return EXIT.OK;
 });

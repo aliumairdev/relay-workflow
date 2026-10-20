@@ -167,8 +167,8 @@ Each requirement is numbered and testable. Test IDs refer to [AGENT_HANDOFF.md](
 
 ### 6.6 Merge queue
 - FR-25 Merge requests are serialised by a lock with stale-lock detection (fixes the bare `mkdir` lock).
-- FR-26 Gated mode steps: skip if already merged; sync with the default branch if behind; run conflict resolvers; run validate and test with one retry; local CI; bot gate; environment check; approval comment and labels; squash merge; close issue with state done; refresh preview.
-- FR-27 Fast-merge mode: try squash merge immediately; on failure sync with resolvers, push, retry; close the issue with the note "verification follows on main"; enqueue post-merge QA. Test: T-MERGE-2.
+- FR-26 Gated mode steps: skip if already merged; sync with the default branch if behind; run conflict resolvers; run validate and test with one retry; local CI; bot gate; environment check; approval comment and labels; squash merge; record the slice in the issue contract (R-OWN-3: the issue closes only when the whole contract is satisfied, never because a PR merged); close issue with state done; refresh preview.
+- FR-27 Fast-merge mode: try squash merge immediately; on failure sync with resolvers, push, retry; record the slice and keep the issue active until post-merge QA has mapped proof to the contract requirements (the note "verification follows on main" is posted, the issue is not closed); enqueue post-merge QA. Test: T-MERGE-2.
 - FR-28 Conflict resolvers by file class: markdown union; JSON templates and sections deep-merge with order-array union; import maps union one-per-line; locale JSON keep both sides; anything else is a real conflict and escalates (resolver exit 2). Resolvers are pluggable per stack profile. Tests: T-RES-1..4.
 - FR-29 Stacked PR chain merge: merge in order; for each child, sync with the default branch resolving only squash-induced conflicts (child version kept when the default branch equals the parent branch for that file); real conflicts abort (generalises `merge-stack.sh`).
 - FR-30 The merge script never posts an approval it cannot back: it verifies a reviewer verdict record exists for the head sha before writing "APPROVED" (fixes Nexus `merge.sh`, which wrote the approval text itself).
@@ -215,11 +215,22 @@ Each requirement is numbered and testable. Test IDs refer to [AGENT_HANDOFF.md](
 - FR-63 Post-merge QA agent runs on the default branch after fast merges (and sampled after gated merges) and files issues labelled `type:bug` with screenshots or logs.
 
 ### 6.11 Owner decisions and security
-- FR-64 Owner-decision queue: agents write a decision request issue (`owner-decision` label) with options, default, deadline; they mark the work `state:blocked` with `handoff:to-human` and take other work. `/workflow:status` lists the queue.
+- FR-64 Owner-decision queue: agents write a decision request issue (`owner-decision` label) with options, default, deadline; they mark the work `state:blocked` with `handoff:to-human` and take other work (a decision about one requirement parks only that requirement). `/workflow:status` lists the queue. A request is accepted only for product ambiguity, destructive production mutation, external/provider authorization, conflicting accepted requirements, scope change or a business choice, and only with the exact question, why the issue contract does not answer it, evidence, options, a recommended default and why proceeding automatically is unsafe (R-OWN-5); technical choices and "may I finish this issue?" are rejected.
 - FR-65 Secret guard hook blocks commits and tool outputs containing patterns from `security.secret_patterns` (tokens, keys, configured passwords by hash); secrets are provided only through environment or ephemeral session files outside the repo.
 - FR-66 Destructive-command gate hook requires allow-list match or owner approval for configured patterns (force push, recursive deletes outside the worktree root, store deletions, hard resets on shared branches).
 - FR-67 Environment mutations (store push, data population) must be scoped (named dev target in config), idempotent, and reversible (the script records an undo note). A mutation outside the configured target is blocked.
 - FR-68 Per-runtime credentials live in each runtime's own secret store; tokens are least privilege; every label change and comment records actor identity (audit trail via GitHub timeline plus ledger).
+
+### 6.11a Complete issue ownership (issue contract)
+
+Problem observed: an agent reads an issue with several acceptance requirements, fixes one or two, merges the PR, reports the rest as "not done", asks whether to continue or to open a follow-up, and sometimes closes the issue anyway. Relay must make this impossible by design.
+
+- **R-OWN-1** The issue is the complete work contract. On claim/dispatch Relay reads the whole issue and its acceptance-amending comments and persists an issue contract (requirement ids, text, kind, disposition, evidence, blockers, scope changes, PRs, drift fingerprint). The dispatch brief contains it.
+- **R-OWN-2** `ISSUE COMPLETE iff every accepted requirement has an acceptable final disposition` (PASS, FIXED_AND_VERIFIED, VALID_TERMINAL_DISPOSITION, EXPLICITLY_REMOVED_FROM_SCOPE; EXTERNALLY_BLOCKED lets work wait but never closes). NOT_PROVED, UNKNOWN, UNCHECKED, TODO, NEEDS_INVESTIGATION, NEEDS_DECISION (behaviour already defined), TESTS_ONLY (runtime proof required), MERGED_NOT_VERIFIED, "follow-up issue created" and "closed with known gaps" are not completion.
+- **R-OWN-3** A merge never closes an issue by itself. After a merge the issue stays active and returns to `state:ready` while requirements remain; the orchestrator and Stop hook keep the loop running without a human saying "continue".
+- **R-OWN-4** Closure only through `relay-contract close` (check, audit, close). PRs reference issues with `Refs #N`; closing keywords are rewritten. A GitHub-closed issue with an incomplete contract is `GITHUB_CLOSED_CONTRACT_INCOMPLETE`: surfaced, reopened (policy) or recorded as a release blocker.
+- **R-OWN-5** Owner decisions are rejected unless they carry the question, why the contract does not answer it, evidence, options, a recommended default and why proceeding is unsafe, and fall in one of six categories. Follow-up issues never satisfy an original requirement.
+- **R-OWN-6** Reviewers judge the PR and the truth of its claimed contract coverage (CONTRACT_COVERAGE, ISSUE_COMPLETE); QA maps proof to requirement ids; status, dashboard, journal, release audit and MCP expose the same state.
 
 ### 6.12 Observability and resumability
 - FR-69 `/workflow:status` shows active claims and leases, PRs by review state, merge queue, owner-decision queue, tier mix, load, rate-limit state, last proof result.

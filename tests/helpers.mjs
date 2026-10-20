@@ -120,3 +120,20 @@ export const ledgerRows = (sb) => {
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
 };
 export const prsOf = (sb) => sb.db().items.filter((i) => i.pull_request);
+
+// ---- issue-contract helpers ---------------------------------------------------------------------
+// The sandbox config ships with `contract: { mode: off }` so legacy plumbing tests stay about plumbing.
+export function enforceContracts(sb, extra = '') {
+  sb.patchConfig((t) => t.replace('contract: { mode: off }', `contract: { mode: enforce${extra} }`));
+  sb.git(['add', 'workflow.yaml']); sb.git(['commit', '-qm', 'chore: enforce issue contracts']); sb.git(['push', '-q', 'origin', 'main']);   // branches cut from main inherit the policy
+  return sb;
+}
+export const FOUR_AC_BODY = `## Objective
+Prospects are admitted, migrated and attachable.
+
+## Acceptance Criteria
+- [ ] replan --apply admits an active experiment prospect
+- [ ] all 8 experiment 87 prospects have a next step
+- [ ] legacy prospects migrated and before/after reported
+- [ ] list attach handles existing list members (verify in production against live data)
+`;

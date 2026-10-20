@@ -14,6 +14,8 @@ import { iso, now } from './clock.mjs';
 import { readLog, checkLog } from './journal.mjs';
 import { lint as lintEvidence } from './evidence.mjs';
 import * as ledger from './ledger.mjs';
+import * as C from './contract.mjs';
+import * as Ops from './contractops.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (s) => (s > 0 ? new Promise((r) => setTimeout(r, s * 1000)) : Promise.resolve());
@@ -44,12 +46,30 @@ export async function appendLedger(cfg, row) {
   await withLock(path.join(dir, 'usage.lock'), () => fs.appendFileSync(path.join(dir, 'usage.jsonl'), JSON.stringify(full) + '\n'));
 }
 
-// Merge-queue close-out of the linked issue: state:done, drop transient labels, close.
-export async function closeIssueDone(cp, cfg, issue) {
-  const labels = cp.getIssue(issue).labels.filter((l) => !l.startsWith('state:') && !l.startsWith('handoff:') && !/^review:(claude|codex|human|main|changes)$/.test(l));
-  cp.setLabels(issue, [...labels, 'state:done']);
-  cp.closeIssue(issue);
-  try { await updateState(cfg, (s) => { s.claims = s.claims.filter((c) => c.issue !== issue); }); } catch { /* STATE.json is a cache; relay-state rebuild repairs it */ }
+// Merge-queue close-out of the linked issue (state:done, drop transient labels, close) lives with the contract gate.
+export const closeIssueDone = (cp, cfg, issue) => Ops.closeIssueDone(cp, cfg, issue);
+
+// Post-merge QA queue (.relay/qa-queue/<pr>.json); relay-qa reads it.
+export function enqueueQA(cfg, { pr, issue, branch }) {
+  const dir = path.join(cfg.__root, '.relay', 'qa-queue'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${pr}.json`), JSON.stringify({ pr, issue: issue || null, branch, enqueued_at: iso(now()) }) + '\n');
+}
+
+// What a merge means for the issue. Contract mode: the PR is one slice; the issue closes only when the whole contract is satisfied.
+async function afterMerge(ctx, { pr, issue, branch, p, verdict = null, ci = null, qa = 'n/a', dryNote = null }) {
+  const { cfg, cp } = ctx;
+  if (Ops.modeOf(cfg) === 'enforce') {
+    const s = await Ops.settle(ctx, issue, { pr, branch, head_sha: p.head?.sha, body: p.body, verdict, ci, qa });
+    const ev = s.ev || s.contract && C.evaluate(s.contract, { requireAudit: false });
+    const tail = s.closed ? `contract ${ev.counts.complete}/${ev.counts.total} complete, issue closed` : `contract ${ev?.counts.complete}/${ev?.counts.total} complete, issue stays active${ev?.unresolved.length ? ` (remaining ${ev.unresolved.map((r) => r.id).join(', ')})` : ''}`;
+    return { closed: !!s.closed, tail };
+  }
+  if (Ops.modeOf(cfg) === 'warn') {
+    try { const r = await Ops.check(cp, cfg, issue, { requireAudit: false }); if (!r.ev.closable) cp.comment(issue, `WARNING (contract mode warn): closing #${issue} although the issue contract is incomplete: ${[...r.ev.unresolved, ...r.ev.blocked].map((x) => x.id).join(', ')}.`); } catch { /* warn mode never blocks */ }
+  }
+  if (dryNote) cp.comment(issue, dryNote);
+  await closeIssueDone(cp, cfg, issue);
+  return { closed: true, tail: '' };
 }
 
 function markPR(cp, pr) {
@@ -79,6 +99,12 @@ export async function mergeGated(ctx, { pr, issue }, { settle = settleS(), emit 
     const spent = ledger.readAll(cfg).filter((r) => r.pr === pr || (issue > 0 && r.issue === issue)).reduce((n, r) => n + (r.cost_usd || 0), 0);
     if (spent >= ceiling) return skip('budget denied');
   }
+  if (issue > 0 && Ops.enforced(cfg)) {                     // a PR must say truthfully which part of the issue contract it covers
+    await Ops.ensure(cp, cfg, issue); const cur = (await Ops.refresh(cp, cfg, issue)).contract;
+    const bad = C.lintPR(p.body, cur);
+    if (bad.length) { for (const b of bad) emit(`contract: [${b.rule}] ${b.message}`); return skip(`contract coverage: ${bad[0].rule}`); }
+    if (!v.verdict.contract_coverage) { emit('contract: the verdict carries no CONTRACT_COVERAGE (reviewer must post --coverage / --issue-complete)'); return skip('verdict lacks contract coverage'); }
+  }
   const behind = commitsBehind(cfg, br);
   if (behind === null) return skip('sync failed');
   if (dryRun) return done('skip', `#${pr} DRY-RUN (would ${behind ? 'sync, ' : ''}run CI, bot gate, then squash-merge)`, 'dry-run');
@@ -104,9 +130,15 @@ export async function mergeGated(ctx, { pr, issue }, { settle = settleS(), emit 
   }
   try { cp.mergePR(pr, 'squash'); } catch (e) { emit(e.message); return done('failed', `#${pr} MERGE FAILED`, e.message); }
   markPR(cp, pr);
-  if (issue > 0) await closeIssueDone(cp, cfg, issue);
+  let tail = '', qa = 'n/a';
+  if (issue > 0 && Ops.enforced(cfg)) {         // a covered requirement that needs runtime proof also needs post-merge QA mapped back to it
+    const cur = Ops.load(cp, issue)?.contract, cov = C.parseCoverage(p.body)?.coverage || {};
+    if (cur && Object.entries(cov).some(([id, how]) => how === 'implemented' && cur.requirements.find((r) => r.id === id)?.requires?.runtime_proof)) qa = 'pending';
+  }
+  if (issue > 0) tail = (await afterMerge(ctx, { pr, issue, branch: br, p, qa, verdict: v.verdict, ci: cfg.ci?.steps?.length ? `relay-ci ${br} @ ${String(p.head?.sha).slice(0, 10)}: ${cfg.ci.steps.map((x) => x.name).join(', ')} passed` : null })).tail;
+  if (qa === 'pending') enqueueQA(cfg, { pr, issue, branch: br });
   await appendLedger(cfg, { pr, issue: issue || null, outcome: 'done', reason: 'gated merge' });
-  return done('merged', `#${pr} MERGED${issue > 0 ? ` (issue #${issue})` : ''}`);
+  return done('merged', `#${pr} MERGED${issue > 0 ? ` (issue #${issue})` : ''}${tail ? ` — ${tail}` : ''}`);
 }
 
 // Fast pipeline: merge first; on conflict sync (resolvers, no tests) and retry.
@@ -126,15 +158,15 @@ export async function mergeFast(ctx, { pr, issue }, { settle = settleS(), emit =
     p = cp.getPR(pr);
   }
   if (!isMerged(p)) { await appendLedger(cfg, { pr, issue: issue || null, outcome: 'failed', reason: 'fast merge failed' }); return { pr, issue, status: 'failed', line: `#${pr} NOT MERGED` }; }
+  const qaOn = (cfg.policy.fast_merge?.post_merge_qa ?? 'required') !== 'off';
+  let tail = '';
   if (issue > 0) {
     const note = (cfg.policy.fast_merge?.close_note ?? 'Fixed by merged PR #{pr}; verification follows on main.').replaceAll('{pr}', String(pr));
-    cp.comment(issue, note);
-    await closeIssueDone(cp, cfg, issue);
+    tail = (await afterMerge(ctx, { pr, issue, branch: br, p, qa: qaOn ? 'pending' : 'n/a', dryNote: note })).tail;
   }
-  if ((cfg.policy.fast_merge?.post_merge_qa ?? 'required') !== 'off') {
-    const dir = path.join(cfg.__root, '.relay', 'qa-queue'); fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${pr}.json`), JSON.stringify({ pr, issue: issue || null, branch: br, enqueued_at: iso(now()) }) + '\n');
+  if (qaOn) {
+    enqueueQA(cfg, { pr, issue, branch: br });
   }
   await appendLedger(cfg, { pr, issue: issue || null, outcome: 'done', reason: 'fast merge' });
-  return { pr, issue, status: 'merged', line: `#${pr} MERGED` };
+  return { pr, issue, status: 'merged', line: `#${pr} MERGED${tail ? ` — ${tail}` : ''}` };
 }

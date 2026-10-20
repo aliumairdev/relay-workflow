@@ -21,6 +21,9 @@ Offline harnesses diverge from the real platform; only a proof stage turns "merg
 
 ## Evidence
 
+Map each result to the issue's acceptance requirements: `relay-qa done <pr> --map AC1=PASS|FAIL|NOT_VERIFIED --proof <path>`; a FAIL returns the issue to implementation ([issue-contract](../issue-contract/SKILL.md)). Merged is not verified; verified is not issue complete.
+
+
 Real output tails, log paths, screenshots (few, at the stated viewports). Scoped, reversible environment changes only; credentials from the environment or an ephemeral session. Platform-specific steps live in the stack profile.
 
 Keep the issue journal current with `test` and `blocker` entries ([issue-journal](../issue-journal/SKILL.md)).

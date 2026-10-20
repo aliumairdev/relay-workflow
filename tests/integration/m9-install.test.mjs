@@ -222,7 +222,7 @@ test('T-DOC-1: doctor detects a missing @AGENTS.md import, model ids, oversize A
   const d = repo();
   try {
     const init = cli(d, 'relay-init', ['init', '--yes', '--runtime', 'claude', '--repo', 'local/sandbox']);
-    assert.equal(init.code, 0, init.stderr); assert.match(init.stdout, /labels: 54 created/, 'init creates the label set');
+    assert.equal(init.code, 0, init.stderr); assert.match(init.stdout, /labels: 58 created/, 'init creates the label set');
     const clean = cli(d, 'relay-doctor', ['--json']);
     const by = (r) => Object.fromEntries(r.json().checks.map((c) => [c.id, c]));
     assert.equal(by(clean)['claude-imports-agents'].status, 'pass'); assert.equal(by(clean)['agents-neutral'].status, 'pass'); assert.equal(by(clean)['agents-size'].status, 'pass');

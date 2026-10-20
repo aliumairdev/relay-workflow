@@ -58,3 +58,21 @@ export function verdict(sb, pr, result, runtime, extra = []) {
   return sb.run('relay-verdict', ['post', String(pr), '--result', result, '--checklist', '{"acceptance":"PASS","tests":"PASS"}', ...(result === 'CHANGES' ? ['--changes-file', f] : []), ...extra], { env: { RELAY_RUNTIME: runtime, RELAY_ACTOR: 'reviewer' } });
 }
 export const showMain = (sb, file) => sb.git(['--git-dir', path.join(sb.root, 'remote.git'), 'show', `main:${file}`]).stdout;
+
+// ---- issue-contract slices ----------------------------------------------------------------------
+// Body of a PR that is one slice of an issue: it says truthfully which requirements it covers.
+export function sliceBody(issue, { covers = [], all = [], tail = 'Slice of the issue.' }) {
+  const done = new Set(covers);
+  const left = all.filter((id) => !done.has(id));
+  return [`Refs #${issue}`, '', '## Outcome', tail, '', '## Validation (real results)', 'npm test → 1 pass', '', '## NOT_VERIFIED', 'runtime behaviour on live data (see contract)', '', '## Contract Coverage', `Issue: #${issue}`,
+    ...all.map((id) => `- ${id}: ${done.has(id) ? 'implemented' : 'not covered by this PR'}`), '', `Issue completion: ${left.length ? 'NO — additional accepted requirements remain.' : 'YES'}`, ''].join('\n');
+}
+export function openSlicePR(sb, { branch, body, title = 'slice' }) {
+  const r = sb.gh(['api', '-X', 'POST', 'repos/local/sandbox/pulls', '--input', '-'], JSON.stringify({ title, head: branch, base: 'main', body }));
+  if (r.code !== 0) throw new Error(r.stderr);
+  return JSON.parse(r.stdout).number;
+}
+// Reviewer verdict that states contract coverage (id -> PASS|FAIL|NOT_COVERED) and ISSUE_COMPLETE.
+export function coverageVerdict(sb, pr, runtime, coverage, complete, result = 'APPROVED') {
+  return verdict(sb, pr, result, runtime, [...Object.entries(coverage).flatMap(([id, v]) => ['--coverage', `${id}=${v}`]), '--issue-complete', complete ? 'YES' : 'NO']);
+}
