@@ -16,7 +16,9 @@ npx relay-workflow init --runtime claude,codex             # managed blocks keep
 npx relay-workflow doctor                                  # fix anything red
 ```
 
-Claude Code plugin: `/plugin marketplace add <owner>/relay`, `/plugin install workflow@relay-marketplace`, `/workflow:init`.
+Claude Code plugin: `/plugin marketplace add aliumairdev/relay-workflow`, `/plugin install workflow@relay-marketplace`, `/workflow:init`.
+
+Codex plugin: `codex plugin marketplace add aliumairdev/relay-workflow`, then install `workflow` from the Plugins directory (Codex has no slash command; use `npx relay-workflow init`).
 
 Then edit `workflow.yaml` (CI commands, model ids marked `<...>`, `policy.mode`), write `docs/PRODUCT_SPEC.md`, and run `/workflow:plan`, `/workflow:dispatch`, `/workflow:status`. Codex issues: `relay-workflow loop --runtime codex`.
 

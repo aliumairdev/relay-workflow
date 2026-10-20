@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ledger row",
+  "type": "object",
+  "required": [
+    "ts",
+    "run_id",
+    "runtime",
+    "tier",
+    "task_class",
+    "outcome"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "runtime": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "tier": {
+      "enum": [
+        "T0",
+        "T1",
+        "T2",
+        "T3"
+      ]
+    },
+    "task_class": {
+      "type": "string"
+    },
+    "issue": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pr": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "tokens_in": {
+      "type": "integer"
+    },
+    "tokens_out": {
+      "type": "integer"
+    },
+    "cost_usd": {
+      "type": "number"
+    },
+    "estimated": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "enum": [
+        "done",
+        "rate_limited",
+        "failed",
+        "escalated",
+        "changes_requested",
+        "approved",
+        "fallback",
+        "admitted"
+      ]
+    },
+    "rate_limit": {
+      "type": "boolean"
+    },
+    "escalation_from": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "brief_hash": {
+      "type": "string"
+    },
+    "wall_s": {
+      "type": "number"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

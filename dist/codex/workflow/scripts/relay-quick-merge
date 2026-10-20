@@ -1,0 +1,24 @@
+#!/usr/bin/env node
+// relay-quick-merge <pr:issue>...   fast pipeline: merge first, sync with resolvers on conflict, retry; enqueue post-merge QA
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { parsePair, mergeFast, withMergeLock, settleS } from '../lib/merge.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { settle: { type: 'string' } });
+  if (!args.length) throw new RelayError('usage: relay-quick-merge <pr:issue>...   (issue 0 = none)', EXIT.INVALID);
+  let pairs; try { pairs = args.map(parsePair); } catch (e) { throw new RelayError(e.message, EXIT.INVALID); }
+  const c = ctx(), results = [];
+  try {
+    await withMergeLock(c.cfg, async () => {
+      for (const pair of pairs) {
+        if (flags['dry-run']) { results.push({ ...pair, status: 'skip', line: `#${pair.pr} DRY-RUN (would merge, sync on conflict)` }); }
+        else results.push(await mergeFast(c, pair, { settle: settleS(flags.settle), emit: (l) => process.stderr.write(l + '\n') }));
+        if (!flags.json) process.stdout.write(results.at(-1).line + '\n');
+      }
+    });
+  } catch (e) { if (e.busy) throw new RelayError(e.message, EXIT.WAIT); throw e; }
+  if (flags.json) out(flags, results);
+  return results.every((r) => r.status === 'merged') ? EXIT.OK : EXIT.ERROR;
+});

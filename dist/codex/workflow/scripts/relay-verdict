@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// relay-verdict post <pr> --result APPROVED|CHANGES --checklist <json|file> [--changes-file f] [--runtime rt] [--agent id] [--tier T1]
+// Exit 0 posted; 3 invalid; 7 refused (reviewer runtime == implementer runtime while cross-review is on)
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx, actorClass } from '../lib/ctx.mjs';
+import { embed } from '../lib/markers.mjs';
+import { validateAgainst } from '../lib/schema.mjs';
+import { changeLabels } from '../lib/labelops.mjs';
+import { stateOf } from '../lib/labels.mjs';
+import { closesIssue } from '../lib/issue.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const title = (k) => k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+const readJson = (v) => { try { return JSON.parse(v); } catch { return JSON.parse(fs.readFileSync(v, 'utf8')); } };
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { result: { type: 'string' }, checklist: { type: 'string' }, 'changes-file': { type: 'string' }, runtime: { type: 'string' }, agent: { type: 'string' }, tier: { type: 'string' }, 'implementer-runtime': { type: 'string' }, 'risk-score': { type: 'string' }, 'not-verified': { type: 'string', multiple: true }, coverage: { type: 'string', multiple: true }, 'issue-complete': { type: 'string' } });
+  const [cmd, prArg] = args, pr = Number(prArg);
+  if (cmd !== 'post' || !pr || !flags.result) throw new RelayError('usage: relay-verdict post <pr> --result APPROVED|CHANGES --checklist <json|file> [--changes-file f] --runtime <rt>', EXIT.INVALID);
+  const { cfg, cp } = ctx();
+  const runtime = flags.runtime || process.env.RELAY_RUNTIME;
+  if (!runtime) throw new RelayError('reviewer runtime unknown: pass --runtime or set RELAY_RUNTIME', EXIT.INVALID);
+  const p = cp.getPR(pr);
+  const implementer = flags['implementer-runtime'] || /^agent\/([^/]+)\//.exec(p.head?.ref || '')?.[1] || null;
+  const enabled = Object.entries(cfg.runtimes || {}).filter(([, r]) => r.enabled !== false).map(([k]) => k);
+  let sameRuntime = false;
+  if (implementer && implementer === runtime) {
+    if (cfg.review.cross_runtime && enabled.length > 1) throw new RelayError(`refused: reviewer runtime "${runtime}" implemented this PR; cross-runtime review is on`, EXIT.REFUSED);
+    sameRuntime = true;
+  } else if (!implementer) process.stderr.write('warning: implementer runtime unknown; cross-runtime check skipped\n');
+
+  const changes = flags['changes-file'] ? fs.readFileSync(flags['changes-file'], 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : [];
+  const rec = {
+    type: 'verdict', pr, head_sha: p.head.sha,
+    reviewer: { agent_id: flags.agent || process.env.RELAY_AGENT_ID || `${runtime}-reviewer`, runtime, tier: flags.tier || cfg.review.routine_tier },
+    result: flags.result, checklist: flags.checklist ? readJson(flags.checklist) : {}, changes, not_verified: flags['not-verified'] || [],
+  };
+  if (implementer) rec.implementer_runtime = implementer;
+  // Contract coverage: the reviewer judges the PR AND whether its claimed coverage of the issue contract is truthful.
+  const linkedNo = closesIssue(p.body);
+  if (flags.coverage?.length) {
+    rec.contract_coverage = {};
+    for (const x of flags.coverage) { const m = /^([A-Z]+\d+)=(PASS|FAIL|NOT_COVERED)$/i.exec(x); if (!m) throw new RelayError(`bad --coverage "${x}" (expected ID=PASS|FAIL|NOT_COVERED)`, EXIT.INVALID); rec.contract_coverage[m[1].toUpperCase()] = m[2].toUpperCase(); }
+  }
+  if (flags['issue-complete']) { const v = flags['issue-complete'].toUpperCase(); if (!['YES', 'NO'].includes(v)) throw new RelayError('--issue-complete must be YES or NO', EXIT.INVALID); rec.issue_complete = v; }
+  if (linkedNo && Ops.enforced(cfg)) {
+    const contract = (await Ops.refresh(cp, cfg, linkedNo)).contract;
+    const open = contract.requirements.filter((r) => !C.COMPLETE_STATUSES.includes(r.status) && !r.derived);
+    const cov = rec.contract_coverage || {}, claim = C.parseCoverage(p.body);
+    const problems = [];
+    if (rec.result === 'APPROVED') {
+      if (!rec.contract_coverage || !rec.issue_complete) problems.push(`state the contract coverage: --coverage ${open.map((r) => `${r.id}=PASS|FAIL|NOT_COVERED`).join(' --coverage ') || 'ID=PASS'} --issue-complete YES|NO (a PR can be approved with ISSUE_COMPLETE=NO: it is one valid slice)`);
+      for (const r of open) if (rec.contract_coverage && !(r.id in cov)) problems.push(`coverage does not mention ${r.id}`);
+      for (const f of C.lintPR(p.body, contract)) problems.push(`PR body: [${f.rule}] ${f.message}`);
+      for (const [id, how] of Object.entries(claim?.coverage || {})) if (how === 'implemented' && cov[id] && cov[id] !== 'PASS') problems.push(`the PR claims it implements ${id} but the review finds ${cov[id]}: that is a false coverage claim (post CHANGES)`);
+      if (rec.issue_complete === 'YES' && open.some((r) => cov[r.id] !== 'PASS')) problems.push(`ISSUE_COMPLETE=YES but ${open.filter((r) => cov[r.id] !== 'PASS').map((r) => r.id).join(', ')} are not PASS`);
+      if (claim && claim.completes_issue !== null && rec.issue_complete && (claim.completes_issue ? 'YES' : 'NO') !== rec.issue_complete) problems.push(`the PR states "Issue completion: ${claim.completes_issue ? 'YES' : 'NO'}" but the review finds ISSUE_COMPLETE=${rec.issue_complete}: the PR misreports its coverage`);
+    }
+    if (problems.length) throw new RelayError(`refused: cannot approve for contract #${linkedNo}:\n${problems.map((x) => `  - ${x}`).join('\n')}`, EXIT.INVALID);
+  }
+  if (flags['risk-score']) rec.risk_score = Number(flags['risk-score']);
+  const v = validateAgainst('verdict', rec);
+  if (!v.ok) throw new RelayError(`invalid verdict: ${v.errors.join('; ')}`, EXIT.INVALID);
+  if (rec.result === 'CHANGES' && !changes.length) throw new RelayError('CHANGES needs a numbered list (--changes-file)', EXIT.INVALID);
+  if (flags['dry-run']) { out(flags, { dry_run: true, verdict: rec }); return EXIT.OK; }
+
+  const human = ['MAIN REVIEW', `Result: ${rec.result}`, ...Object.entries(rec.checklist).map(([k, val]) => `${title(k)}: ${val}`),
+    ...(changes.length ? ['', 'Changes requested:', ...changes.map((c, i) => (/^\d+[.)]/.test(c) ? c : `${i + 1}. ${c}`))] : []),
+    ...(rec.contract_coverage ? ['', 'CONTRACT_COVERAGE:', ...Object.entries(rec.contract_coverage).map(([k, val]) => `${k} ${val}`), '', `ISSUE_COMPLETE: ${rec.issue_complete || 'NO'}`] : []),
+    ...(rec.not_verified.length ? ['', 'NOT_VERIFIED:', ...rec.not_verified.map((x) => `- ${x}`)] : []),
+    '', `Head: ${rec.head_sha}${sameRuntime ? ' (same runtime, different agent instance)' : ''}`].join('\n');
+  if (sameRuntime) rec.same_runtime = true;
+  cp.comment(pr, embed('verdict', rec, human));
+
+  // Labels: verdict label on the PR (reviewer actor); clear review requests; on CHANGES the linked issue goes to changes-requested.
+  const actor = actorClass('reviewer');
+  const add = rec.result === 'APPROVED' ? 'review:approved' : 'review:changes', drop = rec.result === 'APPROVED' ? 'review:changes' : 'review:approved';
+  changeLabels(cp, cfg, pr, { add: [add], remove: [drop], actor });
+  for (const l of cp.getIssue(pr).labels.filter((x) => /^review:(claude|codex|human|main)$/.test(x))) cp.removeLabel(pr, l);
+  const linked = closesIssue(p.body);
+  if (rec.result === 'CHANGES' && linked) {
+    const iss = cp.getIssue(Number(linked));
+    if (stateOf(iss.labels)[0] === 'review') changeLabels(cp, cfg, Number(linked), { add: ['state:changes-requested'], actor });
+  }
+  out(flags, { posted: true, head_sha: rec.head_sha, result: rec.result }, `verdict ${rec.result} posted for ${rec.head_sha.slice(0, 10)}`);
+  return EXIT.OK;
+});

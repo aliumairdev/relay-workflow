@@ -1,0 +1,10 @@
+{
+  "runtime": "codex",
+  "tools": ["exec", "bot-review", "cloud-tasks"],
+  "strengths": ["focused-implementation", "review", "long-running-refactor"],
+  "resume": "relaunch",
+  "headless_cmd": "codex exec",
+  "effort_control": "none",
+  "usage_reporting": "estimated",
+  "dispatch": "relay-codex-dispatch renders the brief, creates the worktree, runs runtimes.codex.exec_cmd with exec_args, prompt_mode (arg|stdin) and model_flag from workflow.yaml. Exact flags depend on the installed version: NOT_VERIFIED against the real binary until confirmed."
+}

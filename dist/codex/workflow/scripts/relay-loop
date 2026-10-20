@@ -1,0 +1,72 @@
+#!/usr/bin/env node
+// relay-loop --runtime codex [--once] [--interval 300] [--parallel 2] [--max N] [--no-review]
+// Poller: sweeps leases, dispatches ready issues labelled for the runtime, dispatches reviews requested from it.
+// Idempotent: the claim protocol and a per-issue dispatch lock prevent double work, so overlapping loops are safe.
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { relayDir } from '../lib/config.mjs';
+import { decide } from '../lib/router.mjs';
+import { dispatchIssue, dispatchReview } from '../lib/dispatch.mjs';
+import { runScript } from '../lib/scripts.mjs';
+import { parseOwnedPaths } from '../lib/issue.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const prio = (labels) => { const p = labels.find((l) => /^priority:p[0-3]$/.test(l)); return p ? Number(p.slice(-1)) : 9; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function pool(items, size, fn) {
+  const results = []; let i = 0, stop = false;
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (!stop && i < items.length) { const item = items[i++]; const r = await fn(item); results.push({ item, ...r }); if (r.code === EXIT.WAIT && /load|agents already running|heavy/.test(r.reason || '')) stop = true; }
+  }));
+  return results;
+}
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { runtime: { type: 'string' }, once: { type: 'boolean' }, interval: { type: 'string' }, parallel: { type: 'string' }, max: { type: 'string' }, 'no-review': { type: 'boolean' } });
+  const { cfg, cp } = ctx();
+  const rt = flags.runtime;
+  if (!rt) throw new RelayError('usage: relay-loop --runtime <rt> [--once] [--interval S] [--parallel N] [--max N]', EXIT.INVALID);
+  if (!cfg.runtimes?.[rt]?.exec_cmd) throw new RelayError(`runtime ${rt} has no exec_cmd in workflow.yaml: nothing to dispatch headlessly`, EXIT.INVALID);
+  const intervalMs = Number(process.env.RELAY_LOOP_SLEEP_MS ?? (Number(flags.interval ?? 300) * 1000));
+  const parallel = Number(flags.parallel ?? 2), max = Number(flags.max ?? 10);
+
+  for (let iteration = 1; ; iteration++) {
+    const summary = { iteration, runtime: rt, swept: 0, dispatched: [], waiting: [], skipped: [], reviews: [] };
+    if (fs.existsSync(path.join(relayDir(cfg), 'pause'))) { summary.paused = true; }
+    else {
+      const sw = runScript(cfg, 'relay-lease', ['sweep', '--json']);
+      try { summary.swept = JSON.parse(sw.stdout).expired.length; } catch { /* sweep output is informational */ }
+      // GitHub closed != contract complete: reopen issues closed outside the contract gate so their work is dispatched again
+      const cs = runScript(cfg, 'relay-contract', ['sweep', '--json']);
+      try { summary.reconciled = JSON.parse(cs.stdout).map((x) => ({ issue: x.issue, action: x.action })); } catch { /* informational */ }
+
+      const candidates = [...cp.listIssues({ labels: ['state:ready'] }), ...cp.listIssues({ labels: ['state:changes-requested'] }).filter((i) => i.labels.includes(`handoff:to-${rt}`))]
+        .filter((i) => !i.labels.includes('owner-decision'))
+        .filter((i) => {
+          const handoff = i.labels.find((l) => l.startsWith('handoff:'));
+          if (handoff && handoff !== `handoff:to-${rt}`) return false;
+          if (i.labels.includes(`agent:${rt}`)) return true;
+          if (i.labels.some((l) => /^agent:(claude|codex|gemini)$/.test(l))) return false;
+          return decide({ target: { kind: 'issue', number: i.number }, class: 'implement', labels: i.labels, paths: parseOwnedPaths(i.body) }, cfg).decision?.runtime === rt;
+        })
+        .sort((a, b) => prio(a.labels) - prio(b.labels) || a.number - b.number).slice(0, max);
+
+      const res = await pool(candidates, parallel, (i) => dispatchIssue(cfg, cp, { issue: i.number, runtime: rt }));
+      for (const r of res) {
+        const row = { issue: r.item.number, outcome: r.outcome, ...(r.pr ? { pr: r.pr } : {}), ...(r.reason ? { reason: r.reason } : {}), ...(r.retry_after_s ? { retry_after_s: r.retry_after_s } : {}) };
+        (r.code === EXIT.OK ? summary.dispatched : r.code === EXIT.WAIT ? summary.waiting : summary.skipped).push(row);
+      }
+      if (!flags['no-review']) {
+        const prs = cp.listPRs('open').filter((p) => p.labels.includes(`review:${rt}`) && !p.labels.some((l) => /^review:(approved|changes)$/.test(l)));
+        const rv = await pool(prs, parallel, (p) => dispatchReview(cfg, cp, { pr: p.number, runtime: rt }));
+        summary.reviews = rv.map((r) => ({ pr: r.item.number, outcome: r.outcome, ...(r.reason ? { reason: r.reason } : {}) }));
+      }
+    }
+    out(flags, summary, `[${iteration}] ${rt}: ${summary.dispatched.length} dispatched, ${summary.waiting.length} waiting, ${summary.skipped.length} skipped, ${summary.reviews.length} reviews${summary.paused ? ' (paused)' : ''}`);
+    if (flags.once) return summary.skipped.some((s) => s.outcome === 'failed') ? EXIT.ERROR : EXIT.OK;
+    await sleep(intervalMs);
+  }
+});

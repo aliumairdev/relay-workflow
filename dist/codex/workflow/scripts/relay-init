@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+// relay-init [--stack S] [--runtime claude,codex,cursor,gemini,copilot] [--dry-run] [--yes] [--version X]
+//            [--name N] [--repo owner/name] [--skills auto|all|profile|none] [--no-labels] [--root DIR]
+// Idempotent. Managed blocks keep existing AGENTS.md / CLAUDE.md content byte for byte; originals are backed up to .relay/backup.
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { parse, out, run } from '../lib/cli.mjs';
+import { init, VERSION, RUNTIMES } from '../lib/install.mjs';
+import { runScript } from '../lib/scripts.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { stack: { type: 'string' }, runtime: { type: 'string' }, yes: { type: 'boolean' }, version: { type: 'string' }, name: { type: 'string' }, repo: { type: 'string' }, skills: { type: 'string' }, 'no-labels': { type: 'boolean' }, root: { type: 'string' } });
+  if (flags.version && flags.version !== VERSION) throw new RelayError(`this relay-workflow is ${VERSION}, not ${flags.version}: run \`npx relay-workflow@${flags.version} init\` to install that version`, EXIT.INVALID);
+  if (flags.skills && !['auto', 'all', 'profile', 'none'].includes(flags.skills)) throw new RelayError('--skills must be auto, all, profile or none', EXIT.INVALID);
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const root = path.resolve(flags.root || (top.status === 0 ? top.stdout.trim() : process.cwd()));
+  const runtimes = flags.runtime ? flags.runtime.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  const r = init(root, { stack: flags.stack, runtimes, dryRun: !!flags['dry-run'], name: flags.name, repo: flags.repo, skills: flags.skills });
+
+  if (r.dryRun) {
+    out(flags, { ...r, diffs: undefined }, `${r.diffs}\n--dry-run: would create ${r.create.length} file(s), modify ${r.modify.length}, keep ${r.kept.length} existing; nothing was written.`);
+    return EXIT.OK;
+  }
+  let labels = null;
+  if (!flags['no-labels']) {
+    try {
+      const cfg = loadConfig({ file: path.join(root, 'workflow.yaml') });
+      if (cfg.project.repo !== 'local') { const l = runScript(cfg, 'relay-labels', ['ensure', '--json'], { cwd: root, env: { RELAY_ACTOR: 'human' } }); labels = l.code === 0 ? JSON.parse(l.stdout).created.length : `skipped (${l.stderr.trim().split('\n')[0] || 'control plane unavailable'})`; }
+    } catch (e) { labels = `skipped (${String(e.message).split('\n')[0]})`; }
+  }
+  const lines = [
+    r.create.length || r.modify.length ? `relay-workflow ${VERSION}: ${r.create.length} created, ${r.modify.length} updated, ${r.unchanged} unchanged${r.kept.length ? `, ${r.kept.length} existing file(s) kept as they were: ${r.kept.join(', ')}` : ''}` : `relay-workflow ${VERSION}: already installed, no changes`,
+    labels != null ? `labels: ${typeof labels === 'number' ? `${labels} created` : labels}` : 'labels: skipped (--no-labels)',
+    'Next: edit workflow.yaml (CI commands, models marked <...>), then run `relay-workflow doctor`.',
+  ];
+  out(flags, { ...r, labels }, lines.join('\n'));
+  return EXIT.OK;
+});

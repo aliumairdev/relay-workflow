@@ -1,0 +1,4 @@
+{% assign label = product.metafields.custom.label | upcase %}
+{% if label != blank %}
+  <h3 class="label">{{ label }}</h3>
+{% endif %}

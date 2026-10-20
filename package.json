@@ -6,7 +6,7 @@
   "license": "MIT",
   "engines": { "node": ">=20" },
   "bin": { "relay-workflow": "core/scripts/relay-workflow" },
-  "files": ["core", "generators", "dist", ".claude-plugin", "README.md"],
+  "files": ["LICENSE", ".agents", "core", "generators", "dist", ".claude-plugin", "README.md"],
   "scripts": {
     "test": "node --test tests/",
     "test:harness": "node --test tests/integration/harness.test.mjs"

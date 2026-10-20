@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+// relay-ledger append --row '<json>' (or JSON on stdin) | read [--since 7d] | share
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import * as ledger from '../lib/ledger.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { row: { type: 'string' }, since: { type: 'string' } });
+  const { cfg } = ctx();
+  const cmd = args[0];
+  if (cmd === 'append') {
+    const raw = flags.row ?? fs.readFileSync(0, 'utf8');
+    let row; try { row = JSON.parse(raw); } catch { throw new RelayError('relay-ledger append: row is not valid JSON', EXIT.INVALID); }
+    if (flags['dry-run']) { ledger.checkRow(cfg, { ts: '2026-01-01T00:00:00Z', ...row }); out(flags, { dry_run: true, row }); return EXIT.OK; }
+    const r = await ledger.append(cfg, row);
+    out(flags, r, `appended ${r.run_id}`); return EXIT.OK;
+  }
+  if (cmd === 'read') { const rows = ledger.readAll(cfg, { sinceMs: ledger.parseSince(flags.since) }); out({ json: true }, rows); return EXIT.OK; }
+  if (cmd === 'share') { const rows = ledger.readAll(cfg, { sinceMs: ledger.parseSince(flags.since) }); const s = ledger.tierShare(rows); out(flags, s, JSON.stringify(s.share)); return EXIT.OK; }
+  throw new RelayError('usage: relay-ledger append|read|share', EXIT.INVALID);
+});

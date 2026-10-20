@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// relay-lease sweep [--issue N] | heartbeat <issue> --agent id | release <issue> --agent id [--reason r]
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { analyze, leaseUntil } from '../lib/claims.mjs';
+import { changeLabels } from '../lib/labelops.mjs';
+import { updateState } from '../lib/state.mjs';
+import { embed } from '../lib/markers.mjs';
+import { now, iso } from '../lib/clock.mjs';
+import { git } from '../lib/exec.mjs';
+import { stateOf } from '../lib/labels.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { agent: { type: 'string' }, issue: { type: 'string' }, reason: { type: 'string' }, nonce: { type: 'string' } });
+  const [cmd, arg] = args;
+  const { cfg, cp } = ctx();
+  const agent = flags.agent || process.env.RELAY_AGENT_ID;
+
+  if (cmd === 'sweep') {
+    const issues = flags.issue ? [cp.getIssue(Number(flags.issue))] : [...cp.listIssues({ labels: ['state:claimed'] }), ...cp.listIssues({ labels: ['state:in-progress'] })];
+    const expired = [];
+    for (const i of issues) {
+      const a = analyze(cp.listComments(i.number));
+      for (const r of a.records.filter((x) => x.status === 'expired')) {
+        const c = r.claim;
+        const sha = git(['ls-remote', 'origin', `refs/heads/${c.branch}`], { cwd: cfg.__root }).stdout.split('\t')[0] || null;
+        const rec = { type: 'lease-expired', issue: i.number, agent_id: c.agent_id, nonce: c.nonce, branch: c.branch, last_commit: sha, at: iso(now()) };
+        expired.push(rec);
+        if (flags['dry-run']) continue;
+        cp.comment(i.number, embed('lease-expired', rec, `LEASE EXPIRED for ${c.agent_id} (${c.runtime}) at ${r.lease_until}. Branch ${c.branch}${sha ? ` last commit ${sha.slice(0, 10)}` : ' has no pushed commits'}. Issue returned to the queue; the next claimant continues from the existing branch.`));
+        appendQuietly(cp, i.number, { kind: 'lease', text: `Lease expired for ${c.agent_id} (${c.runtime}); branch ${c.branch}${sha ? ` last commit ${sha.slice(0, 10)}` : ' has no pushed commits'}. Issue returned to the queue.`, agent_id: 'relay-lease' });
+        if (!a.valid && stateOf(i.labels).some((s) => s === 'claimed' || s === 'in-progress')) changeLabels(cp, cfg, i.number, { add: ['state:ready'], actor: 'lease' });
+        await updateState(cfg, (s) => { s.claims = s.claims.filter((x) => x.nonce !== c.nonce); });
+      }
+    }
+    out(flags, { expired }, expired.length ? expired.map((e) => `expired #${e.issue} (${e.agent_id})`).join('\n') : 'no expired leases');
+    return EXIT.OK;
+  }
+
+  const issue = Number(arg);
+  if (!issue || !agent) throw new RelayError(`usage: relay-lease ${cmd || 'heartbeat|release'} <issue> --agent <id>`, EXIT.INVALID);
+  const a = analyze(cp.listComments(issue));
+  const mine = [...a.records].reverse().find((r) => r.claim.agent_id === agent && (!flags.nonce || r.claim.nonce === flags.nonce));
+
+  if (cmd === 'heartbeat') {
+    if (!mine || mine.status !== 'active') throw new RelayError(`refused: claim lost on #${issue} (${mine ? mine.status : 'no claim by ' + agent}); stop work and report`, EXIT.REFUSED);
+    const until = leaseUntil(mine.claim.lease_minutes);
+    if (!flags['dry-run']) {
+      cp.comment(issue, embed('heartbeat', { type: 'heartbeat', issue, agent_id: agent, nonce: mine.claim.nonce, lease_until: until, at: iso(now()) }, `heartbeat ${agent}: lease until ${until}`));
+      await updateState(cfg, (s) => { const c = s.claims.find((x) => x.nonce === mine.claim.nonce); if (c) { c.lease_until = until; c.heartbeat_at = iso(now()); } });
+    }
+    out(flags, { lease_until: until }, `lease until ${until}`); return EXIT.OK;
+  }
+
+  if (cmd === 'release') {
+    if (!mine || !['active', 'expired'].includes(mine.status)) { out(flags, { released: false }, 'nothing to release'); return EXIT.OK; }
+    if (!flags['dry-run']) {
+      cp.comment(issue, embed('release', { type: 'release', issue, agent_id: agent, nonce: mine.claim.nonce, reason: flags.reason || 'release', at: iso(now()) }, `RELEASED by ${agent}${flags.reason ? `: ${flags.reason}` : ''}`));
+      appendQuietly(cp, issue, { kind: 'lease', text: `Released by ${agent}${flags.reason ? `: ${flags.reason}` : ''}.`, agent_id: agent, runtime: mine.claim.runtime });
+      const labels = cp.getIssue(issue).labels;
+      if (stateOf(labels).some((s) => s === 'claimed' || s === 'in-progress')) changeLabels(cp, cfg, issue, { add: ['state:ready'], actor: 'implementer' });
+      await updateState(cfg, (s) => { s.claims = s.claims.filter((x) => x.nonce !== mine.claim.nonce); });
+    }
+    out(flags, { released: true }, `released #${issue}`); return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-lease sweep|heartbeat|release', EXIT.INVALID);
+});

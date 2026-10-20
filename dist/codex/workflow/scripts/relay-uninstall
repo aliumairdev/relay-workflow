@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// relay-uninstall [--keep-config] [--force] [--dry-run]
+// Removes only managed blocks, reverts merged JSON keys and deletes generated files that still match the lock.
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { parse, out, run } from '../lib/cli.mjs';
+import { uninstall } from '../lib/install.mjs';
+import { EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags } = parse(process.argv.slice(2), { 'keep-config': { type: 'boolean' }, force: { type: 'boolean' }, root: { type: 'string' } });
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const root = path.resolve(flags.root || (top.status === 0 ? top.stdout.trim() : process.cwd()));
+  const r = uninstall(root, { keepConfig: !!flags['keep-config'], force: !!flags.force, dryRun: !!flags['dry-run'] });
+  out(flags, r, `${r.dryRun ? 'would remove' : 'removed'} ${r.removed.length} file(s); ${r.dryRun ? 'would revert' : 'reverted'} managed content in ${r.reverted.length} file(s)${r.kept.length ? `; kept (edited or requested): ${r.kept.join(', ')}` : ''}`);
+  return EXIT.OK;
+});

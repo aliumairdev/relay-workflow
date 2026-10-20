@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+// relay-issues-create <plan.json> [--dry-run]
+// plan: { "issues": [ { "key": "a", "title": "...", "body": "...", "labels": ["state:backlog","agent:any"], "deps": ["b"], "milestone": "M1" } ] }
+// Creates the issues, resolves deps (by key) into a "Depends on" line, creates missing milestones. Idempotent by title.
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { canon, violations } from '../lib/labels.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), {});
+  if (!args[0]) throw new RelayError('usage: relay-issues-create <plan.json> [--dry-run]', EXIT.INVALID);
+  let plan; try { plan = JSON.parse(fs.readFileSync(args[0], 'utf8')); } catch (e) { throw new RelayError(`cannot read plan: ${e.message}`, EXIT.INVALID); }
+  const items = plan.issues;
+  if (!Array.isArray(items) || !items.length) throw new RelayError('plan.issues must be a non-empty array', EXIT.INVALID);
+  const keys = new Set();
+  for (const it of items) {
+    if (!it.key || !it.title) throw new RelayError(`every issue needs key and title: ${JSON.stringify(it).slice(0, 80)}`, EXIT.INVALID);
+    if (keys.has(it.key)) throw new RelayError(`duplicate key ${it.key}`, EXIT.INVALID);
+    keys.add(it.key);
+    for (const d of it.deps || []) if (!items.some((x) => x.key === d)) throw new RelayError(`${it.key}: unknown dependency ${d}`, EXIT.INVALID);
+    const v = violations((it.labels || []).map((l) => canon(l)));
+    if (v.length) throw new RelayError(`${it.key}: label conflict ${v.map((x) => x.labels.join(' vs ')).join('; ')}`, EXIT.INVALID);
+  }
+  const { cfg, cp } = ctx();
+  if (flags['dry-run']) { out(flags, { dry_run: true, would_create: items.map((i) => i.title) }); return EXIT.OK; }
+  const existing = cp.listIssues({ state: 'all' });
+  const miles = new Map();
+  const numbers = {}, created = [];
+  for (const it of items) {
+    const dup = existing.find((e) => e.title === it.title);
+    if (dup) { numbers[it.key] = dup.number; continue; }
+    let milestone;
+    if (it.milestone) {
+      if (!miles.size) for (const m of cp.listMilestones()) miles.set(m.title, m.number);
+      if (!miles.has(it.milestone)) miles.set(it.milestone, cp.createMilestone(it.milestone).number);
+      milestone = miles.get(it.milestone);
+    }
+    const i = cp.createIssue({ title: it.title, body: it.body || '', labels: (it.labels || ['state:backlog']).map((l) => canon(l, cfg.labels.aliases)), milestone });
+    numbers[it.key] = i.number; created.push(i.number);
+  }
+  for (const it of items.filter((x) => x.deps?.length && created.includes(numbers[x.key]))) {
+    cp.editIssue(numbers[it.key], { body: `${it.body || ''}\n\n## Dependencies\nDepends on: ${it.deps.map((d) => `#${numbers[d]}`).join(', ')}\n` });
+  }
+  out(flags, { numbers, created }, `created ${created.length} issue(s), ${items.length - created.length} already existed: ${Object.entries(numbers).map(([k, n]) => `${k}=#${n}`).join(' ')}`);
+  return EXIT.OK;
+});

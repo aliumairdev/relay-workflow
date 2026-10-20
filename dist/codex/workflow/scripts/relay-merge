@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// relay-merge <pr:issue>... [--mode gated|fast] [--settle S]   gated pipeline; prints '#pr MERGED (issue #n)' or '#pr SKIP (reason)'
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { parsePair, mergeGated, mergeFast, withMergeLock, settleS } from '../lib/merge.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { mode: { type: 'string' }, settle: { type: 'string' } });
+  if (!args.length) throw new RelayError('usage: relay-merge <pr:issue>... [--mode gated|fast]', EXIT.INVALID);
+  let pairs; try { pairs = args.map(parsePair); } catch (e) { throw new RelayError(e.message, EXIT.INVALID); }
+  const c = ctx(), mode = flags.mode || c.cfg.policy.mode, settle = settleS(flags.settle);
+  const results = [];
+  const emit = (l) => process.stderr.write(l + '\n');
+  try {
+    await withMergeLock(c.cfg, async () => {
+      for (const pair of pairs) {
+        const r = mode === 'fast' ? await mergeFast(c, pair, { settle, emit }) : await mergeGated(c, pair, { settle, emit, dryRun: flags['dry-run'] });
+        results.push(r);
+        if (!flags.json) process.stdout.write(r.line + '\n');
+      }
+    });
+  } catch (e) { if (e.busy) throw new RelayError(e.message, EXIT.WAIT); throw e; }
+  if (flags.json) out(flags, results);
+  return results.every((r) => r.status === 'merged' || r.status === 'already') ? EXIT.OK : EXIT.ERROR;
+});

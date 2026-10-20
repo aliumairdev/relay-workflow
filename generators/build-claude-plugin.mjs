@@ -30,7 +30,7 @@ export const manifest = () => ({
   name: 'workflow',
   version: pkg.version,
   description: pkg.description,
-  author: { name: 'owner' },
+  author: { name: 'aliumairdev' },
   license: pkg.license,
   keywords: ['multi-agent', 'workflow', 'github', 'codex', 'claude', 'model-routing'],
 });
@@ -39,12 +39,12 @@ const README = `# workflow (Relay) — Claude Code plugin
 
 Multi-agent build workflow: GitHub control plane, model routing, claims and handoffs across Claude and Codex, merge queue, real-environment proof, and a per-issue implementation journal.
 
-Install: \`/plugin marketplace add <owner>/relay\`, \`/plugin install workflow@relay-marketplace\`, then \`/workflow:init\`.
+Install: \`/plugin marketplace add aliumairdev/relay-workflow\`, \`/plugin install workflow@relay-marketplace\`, then \`/workflow:init\`.
 
 Generated from \`core/\`; do not edit by hand. Commands: \`/workflow:init plan dispatch claim handoff review merge mode status proof resume route report doctor journal\`.
 `;
 
-function copyDir(src, dst, skip = () => false) {
+export function copyDir(src, dst, skip = () => false) {
   fs.mkdirSync(dst, { recursive: true });
   for (const e of fs.readdirSync(src, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
     const s = path.join(src, e.name), d = path.join(dst, e.name);
@@ -78,7 +78,7 @@ export function build({ out = path.join(ROOT, 'dist/claude/workflow') } = {}) {
   const mk = path.join(ROOT, '.claude-plugin');
   fs.mkdirSync(mk, { recursive: true });
   fs.writeFileSync(path.join(mk, 'marketplace.json'), JSON.stringify({
-    name: 'relay-marketplace', owner: { name: 'owner' }, description: 'Relay: multi-agent build workflow plugins for Claude Code',
+    name: 'relay-marketplace', owner: { name: 'aliumairdev' }, description: 'Relay: multi-agent build workflow plugins for Claude Code',
     plugins: [{ name: 'workflow', source: './dist/claude/workflow', description: 'Multi-agent build workflow', version: pkg.version }],
   }, null, 2) + '\n');
   return out;

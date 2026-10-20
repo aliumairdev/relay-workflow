@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// relay-ci <branch> [--full]   runs ci.steps on origin/<branch> in .relay/ci-wt/<branch>; exit 0 green, 1 failed, 9 cannot fetch/checkout
+import { parse, out, run } from '../lib/cli.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { runCI } from '../lib/ci.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { full: { type: 'boolean' } });
+  if (!args[0]) throw new RelayError('usage: relay-ci <branch> [--full]', EXIT.INVALID);
+  const cfg = loadConfig();
+  if (flags['dry-run']) { out(flags, { dry_run: true, steps: cfg.ci.steps.map((s) => s.name) }, `would run: ${cfg.ci.steps.map((s) => s.name).join(', ')}`); return EXIT.OK; }
+  const lines = [];
+  const r = runCI(cfg, args[0], { full: flags.full, emit: (l) => { lines.push(l); if (!flags.json) process.stdout.write(l + '\n'); } });
+  if (flags.json) out(flags, { code: r.code, log: r.log, steps: r.steps, lines });
+  return r.code;
+});

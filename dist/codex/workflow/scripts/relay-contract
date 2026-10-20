@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+// relay-contract: the issue is the COMPLETE work contract; a PR is a slice. Canonical gate for issue completion.
+//   extract <issue>                      persist the contract from the live issue (idempotent; bootstraps legacy issues without inventing evidence)
+//   show <issue> [--json] [--brief]      the matrix (--brief: the block embedded in dispatch briefs)
+//   update <issue>                       re-read the issue/comments, merge new requirements (never drops any silently)
+//   check <issue> [--json] [--no-refresh]   exit 0 only if the contract is complete; 4 otherwise (closure denied)
+//   mark <issue> <ID[,ID]> <STATUS> [--evidence kind:ref]... [--pr N] [--note T] [--classification C] [--blocker T] [--needs T] [--cite T]
+//   descope <issue> <ID[,ID]> --ref comment:<id>|body --reason R     owner only (RELAY_ACTOR=human)
+//   reconcile <issue> [--keep ID,ID] [--accept-removed ID,ID --ref R --reason R]   resolve drift; reopen a GitHub-closed incomplete issue
+//   followup <issue> --new N --covers ID[,ID]   record a follow-up for traceability (does NOT satisfy anything)
+//   pr-section <issue>                   the "Contract Coverage" skeleton for a PR body
+//   lint-pr <issue> (--body-file F | --pr N)   verify a PR body's coverage claims
+//   audit <issue> [--agent id]           final acceptance audit (records the audited revision)
+//   close <issue>                        check → audit → close; refuses unless the whole contract is satisfied
+//   sweep                                reconcile issues closed on GitHub outside the gate
+//   release-audit [--json]               release-blocking consistency check over closed/complete contracts
+// Exit: 0 ok | 3 invalid | 4 gate failed (contract incomplete) | 7 refused (owner-only action)
+import fs from 'node:fs';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx, actorClass } from '../lib/ctx.mjs';
+import * as C from '../lib/contract.mjs';
+import * as Ops from '../lib/contractops.mjs';
+import { appendQuietly } from '../lib/journal.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const ids = (s) => String(s || '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), {
+    evidence: { type: 'string', multiple: true }, pr: { type: 'string' }, note: { type: 'string' }, classification: { type: 'string' }, blocker: { type: 'string' }, needs: { type: 'string' },
+    cite: { type: 'string' }, ref: { type: 'string' }, reason: { type: 'string' }, keep: { type: 'string' }, 'accept-removed': { type: 'string' }, new: { type: 'string' }, covers: { type: 'string' },
+    'body-file': { type: 'string' }, agent: { type: 'string' }, brief: { type: 'boolean' }, 'no-refresh': { type: 'boolean' }, closed: { type: 'boolean' },
+  });
+  const [cmd, a1, a2, a3] = args;
+  const c = ctx(), { cfg, cp } = c;
+  const by = flags.agent || process.env.RELAY_AGENT_ID || 'agent';
+  const issue = Number(a1);
+  const need = () => { if (!issue) throw new RelayError(`usage: relay-contract ${cmd} <issue> ...`, EXIT.INVALID); return issue; };
+  const show = (contract, extra = {}) => {
+    const ev = C.evaluate(contract, { requireAudit: false });
+    return out(flags, { contract, evaluation: ev, state: C.contractState(contract, extra), ...extra }, flags.brief ? C.renderBlock(contract, { ev }) : `${C.renderBlock(contract, { ev })}\n\nnext: ${ev.next}`);
+  };
+
+  if (cmd === 'extract') {
+    need();
+    const { contract, created } = await Ops.ensure(cp, cfg, issue);
+    show(contract); if (!flags.json) process.stdout.write(created ? '\n(contract created)\n' : '\n(contract already existed: unchanged)\n');
+    return EXIT.OK;
+  }
+  if (cmd === 'show') {
+    need();
+    const { contract } = flags['no-refresh'] ? await Ops.ensure(cp, cfg, issue) : await Ops.refresh(cp, cfg, issue);
+    show(contract, { ghState: cp.getIssue(issue).state }); return EXIT.OK;
+  }
+  if (cmd === 'update') {
+    need();
+    const r = await Ops.refresh(cp, cfg, issue);
+    out(flags, { drifted: r.drifted, added: r.added, vanished: r.vanished }, r.drifted ? `contract updated: added ${r.added.join(', ') || 'none'}; vanished from the issue text: ${r.vanished.join(', ') || 'none'}${r.vanished.length ? ' (reconcile: --keep or owner descope)' : ''}` : 'contract is current with the issue');
+    return EXIT.OK;
+  }
+  if (cmd === 'check') {
+    need();
+    const r = await Ops.check(cp, cfg, issue, { refreshFirst: false });
+    const text = `${C.renderCheck(r.ev)}${r.proposals.length ? `\n\nOwner scope-change proposals not applied: ${r.proposals.map((p) => `${p.id} (comment ${p.comment_id})`).join(', ')} — apply with \`relay-contract descope\` (owner)` : ''}${r.state === 'GITHUB_CLOSED_CONTRACT_INCOMPLETE' ? '\n\nGITHUB_CLOSED_CONTRACT_INCOMPLETE: GitHub closed != contract complete.' : ''}`;
+    out(flags, { closable: r.ev.closable, state: r.state, ...r.ev }, text);
+    return r.ev.closable ? EXIT.OK : EXIT.GATE_FAILED;
+  }
+  if (cmd === 'mark') {
+    need();
+    const targets = ids(a2), status = String(a3 || '').toUpperCase();
+    if (!targets.length || !status) throw new RelayError('usage: relay-contract mark <issue> <ID[,ID]> <STATUS> [--evidence kind:ref]...', EXIT.INVALID);
+    const evidence = C.parseEvidence(flags.evidence, { pr: flags.pr && Number(flags.pr), by });
+    const { contract: cur } = await Ops.ensure(cp, cfg, issue);
+    const gh = cp.getIssue(issue);
+    const sourceText = `${gh.title}\n${gh.body || ''}\n${cp.listComments(issue).filter((x) => !/<!--\s*relay:/.test(x.body || '')).map((x) => x.body).join('\n')}`;
+    if (flags['dry-run']) { let n = cur; for (const id of targets) n = C.mark(n, id, status, { evidence, note: flags.note, classification: flags.classification, blocker: flags.blocker, needs: flags.needs, cite: flags.cite, sourceText, by }); out(flags, { dry_run: true, would_mark: targets, status }); return EXIT.OK; }
+    const next = await Ops.mutate(cp, cfg, issue, (contract) => { let n = contract; for (const id of targets) n = C.mark(n, id, status, { evidence, note: flags.note, classification: flags.classification, blocker: flags.blocker, needs: flags.needs, cite: flags.cite, sourceText, by }); return n; });
+    appendQuietly(cp, issue, { kind: ['PASS', 'FIXED_AND_VERIFIED'].includes(status) ? 'proof' : status === 'EXTERNALLY_BLOCKED' ? 'blocker' : 'progress', text: `${targets.join(',')} → ${status}${flags.note ? `: ${flags.note}` : ''}${evidence.length ? ` [${evidence.map((e) => `${e.kind}: ${e.ref}`).join('; ')}]` : ''}`.slice(0, 1100), agent_id: by, reqs: targets });
+    const after = await Ops.afterChange(c, issue, { reason: `${targets.join(', ')} marked ${status}`, by });
+    const ev = C.evaluate(next, { requireAudit: false });
+    out(flags, { marked: targets, status, closed: !!after.closed, evaluation: ev }, `${targets.join(', ')} → ${status}. Contract ${ev.counts.complete}/${ev.counts.total} complete${after.closed ? '; all requirements satisfied: issue closed' : ev.unresolved.length ? `; remaining ${ev.unresolved.map((r) => r.id).join(', ')}` : ''}`);
+    return EXIT.OK;
+  }
+  if (cmd === 'descope') {
+    need();
+    if (actorClass() !== 'human') throw new RelayError('refused: only the owner/requester (RELAY_ACTOR=human) can remove a requirement from scope', EXIT.REFUSED);
+    const targets = ids(a2);
+    if (!targets.length) throw new RelayError('usage: relay-contract descope <issue> <ID[,ID]> --ref comment:<id>|body --reason R', EXIT.INVALID);
+    await Ops.ensure(cp, cfg, issue);
+    if (/^comment:\d+$/.test(flags.ref || '')) {
+      const cid = Number(flags.ref.slice(8)), com = cp.listComments(issue).find((x) => x.id === cid);
+      if (!com) throw new RelayError(`refused: comment ${cid} does not exist on #${issue}`, EXIT.REFUSED);
+      for (const id of targets) if (!new RegExp(`\\b${id}\\b`).test(com.body || '')) throw new RelayError(`refused: comment ${cid} does not mention ${id}; the scope change must be on record`, EXIT.REFUSED);
+    } else if (flags.ref !== 'body') throw new RelayError('refused: --ref must be comment:<id> (the owner comment) or body (the owner edited the issue text)', EXIT.REFUSED);
+    const next = await Ops.mutate(cp, cfg, issue, (cur) => C.descope(cur, targets, { ref: flags.ref, reason: flags.reason, by: process.env.RELAY_AGENT_ID || 'owner' }));
+    cp.comment(issue, `Scope change recorded: ${targets.join(', ')} removed from scope by the owner (${flags.ref}): ${flags.reason}`);
+    appendQuietly(cp, issue, { kind: 'decision', text: `Scope change: ${targets.join(', ')} removed by the owner (${flags.ref}): ${flags.reason}`.slice(0, 1100), agent_id: 'owner', reqs: targets });
+    const after = await Ops.afterChange(c, issue, { reason: 'scope changed by the owner', by: 'owner', announce: true });
+    out(flags, { descoped: targets, closed: !!after.closed, evaluation: C.evaluate(next, { requireAudit: false }) }, `descoped ${targets.join(', ')}${after.closed ? '; contract complete: issue closed' : ''}`);
+    return EXIT.OK;
+  }
+  if (cmd === 'reconcile') {
+    need();
+    const cur = (await Ops.ensure(cp, cfg, issue)).contract;
+    const report = { reopened: null, kept: [], removed: [] };
+    const gh = cp.getIssue(issue);
+    if (gh.state === 'closed') {
+      const r = await Ops.reconcileClosed(c, issue, { by });
+      report.reopened = r.action;
+      out(flags, { action: r.action, state: r.state }, `${r.action === 'accepted' ? 'closed with a complete contract: accepted' : `${r.state}: ${r.action}`}`);
+      return r.action === 'accepted' ? EXIT.OK : EXIT.GATE_FAILED;
+    }
+    await Ops.refresh(cp, cfg, issue);
+    if (flags.keep) { await Ops.mutate(cp, cfg, issue, (x) => C.keep(x, ids(flags.keep), { reason: flags.reason, by })); report.kept = ids(flags.keep); }
+    if (flags['accept-removed']) {
+      if (actorClass() !== 'human') throw new RelayError('refused: accepting the removal of a requirement is an owner action (RELAY_ACTOR=human)', EXIT.REFUSED);
+      await Ops.mutate(cp, cfg, issue, (x) => C.descope(x, ids(flags['accept-removed']), { ref: flags.ref || 'body', reason: flags.reason, by: 'owner' }));
+      report.removed = ids(flags['accept-removed']);
+    }
+    const r = await Ops.check(cp, cfg, issue, { requireAudit: false });
+    out(flags, { ...report, closable: r.ev.closable, problems: r.ev.problems }, `reconciled #${issue}: kept ${report.kept.join(', ') || 'none'}; removed ${report.removed.join(', ') || 'none'}; ${r.ev.problems.filter((p) => p.code.startsWith('DRIFT')).length ? 'drift still pending' : 'no drift pending'}; contract ${r.ev.counts.complete}/${r.ev.counts.total}`);
+    return EXIT.OK;
+  }
+  if (cmd === 'followup') {
+    need();
+    const n = Number(flags.new);
+    if (!n || !flags.covers) throw new RelayError('usage: relay-contract followup <issue> --new N --covers ID[,ID] [--reason R]', EXIT.INVALID);
+    await Ops.ensure(cp, cfg, issue);
+    await Ops.mutate(cp, cfg, issue, (x) => C.addFollowup(x, { issue: n, covers: ids(flags.covers), reason: flags.reason }));
+    out(flags, { recorded: n, covers: ids(flags.covers), satisfies: false }, `follow-up #${n} recorded for ${ids(flags.covers).join(', ')}. NOTE: a follow-up does not satisfy an acceptance requirement; ${ids(flags.covers).join(', ')} stay${ids(flags.covers).length === 1 ? 's' : ''} unresolved in #${issue}.`);
+    return EXIT.OK;
+  }
+  if (cmd === 'pr-section') { need(); const { contract } = await Ops.refresh(cp, cfg, issue); out(flags, { section: C.coverageSkeleton(contract) }, C.coverageSkeleton(contract)); return EXIT.OK; }
+  if (cmd === 'lint-pr') {
+    need();
+    const body = flags['body-file'] ? fs.readFileSync(flags['body-file'], 'utf8') : flags.pr ? cp.getPR(Number(flags.pr)).body : null;
+    if (body == null) throw new RelayError('usage: relay-contract lint-pr <issue> (--body-file F | --pr N)', EXIT.INVALID);
+    const { contract } = await Ops.refresh(cp, cfg, issue);
+    const findings = C.lintPR(body, contract);
+    out(flags, { ok: !findings.length, findings }, findings.length ? findings.map((f) => `[${f.rule}] ${f.message}`).join('\n') : 'PR contract coverage is truthful and complete');
+    return findings.length ? EXIT.INVALID : EXIT.OK;
+  }
+  if (cmd === 'audit') {
+    need();
+    const r = await Ops.check(cp, cfg, issue, { refreshFirst: true, requireAudit: false });
+    if (!r.ev.closable) { out(flags, { audited: false, ...r.ev }, `${C.renderCheck(r.ev)}\n\nAudit refused: the contract is not complete.`); return EXIT.GATE_FAILED; }
+    await Ops.mutate(cp, cfg, issue, (cur) => C.setAudit(cur, { by, note: flags.note || 'final acceptance audit' }));
+    out(flags, { audited: true, rev: r.contract.rev }, `final acceptance audit recorded for #${issue} (rev ${r.contract.rev}) by ${by}`);
+    return EXIT.OK;
+  }
+  if (cmd === 'close') {
+    need();
+    const r = await Ops.closeIfComplete(cp, cfg, issue, { by });
+    if (!r.closed) { out(flags, { closed: false, ...r.ev }, `${C.renderCheck(r.ev)}`); return EXIT.GATE_FAILED; }
+    out(flags, { closed: true }, `contract complete (${r.ev.counts.complete}/${r.ev.counts.total}); audited; #${issue} closed`);
+    return EXIT.OK;
+  }
+  if (cmd === 'sweep') {
+    const res = await Ops.sweep(c, { by });
+    out(flags, res, res.length ? res.map((x) => `#${x.issue}: ${x.action} (${x.state || 'ok'})`).join('\n') : 'no issues closed outside the contract gate');
+    return res.some((x) => x.action !== 'accepted') ? EXIT.GATE_FAILED : EXIT.OK;
+  }
+  if (cmd === 'release-audit') {
+    const findings = Ops.releaseAudit(cp);
+    out(flags, { ok: !findings.length, findings }, findings.length ? findings.map((x) => `[${x.code}] ${x.message}`).join('\n') : 'release audit: every contract-tracked issue is consistent');
+    return findings.length ? EXIT.GATE_FAILED : EXIT.OK;
+  }
+  throw new RelayError('usage: relay-contract extract|show|update|check|mark|descope|reconcile|followup|pr-section|lint-pr|audit|close|sweep|release-audit <issue> ...', EXIT.INVALID);
+});

@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// relay-worktree create <issue> --runtime rt [--slug s] | create --scratch name [--ref r] | verify [--issue N] | remove <issue>|--scratch name | prune [--older 7d]
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse, out, run } from '../lib/cli.mjs';
+import { ctx } from '../lib/ctx.mjs';
+import { readState, updateState } from '../lib/state.mjs';
+import { git } from '../lib/exec.mjs';
+import { slugify } from '../lib/claims.mjs';
+import * as W from '../lib/worktree.mjs';
+import { RelayError, EXIT } from '../lib/exit.mjs';
+
+const age = (s) => { const m = /^(\d+)([dhm])$/.exec(s || '7d'); if (!m) throw new RelayError(`bad --older ${s}`, EXIT.INVALID); return Number(m[1]) * { d: 864e5, h: 36e5, m: 6e4 }[m[2]]; };
+
+run(async () => {
+  const { flags, args } = parse(process.argv.slice(2), { runtime: { type: 'string' }, slug: { type: 'string' }, scratch: { type: 'string' }, ref: { type: 'string' }, issue: { type: 'string' }, older: { type: 'string' }, 'if-clean': { type: 'boolean' } });
+  const [cmd, arg] = args;
+  const { cfg, cp } = ctx();
+  const main = cfg.__root;
+
+  if (cmd === 'create') {
+    if (flags.scratch) {
+      const target = path.join(W.worktreeRoot(cfg), `scratch-${flags.scratch}`);
+      W.ensureOutsideMain(cfg, target);
+      const ref = flags.ref || cfg.project.default_branch;
+      if (flags['dry-run']) { out(flags, { dry_run: true, path: target }, target); return EXIT.OK; }
+      W.fetchOrigin(main);
+      if (!fs.existsSync(target)) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const r = git(['worktree', 'add', '--detach', target, `origin/${ref}`], { cwd: main });
+        if (r.code !== 0) throw new RelayError(`worktree add failed: ${r.stderr.trim()}`, EXIT.ENV);
+      }
+      out(flags, { path: target, scratch: true }, target); return EXIT.OK;
+    }
+    const issue = Number(arg);
+    if (!issue || !flags.runtime) throw new RelayError('usage: relay-worktree create <issue> --runtime <rt> [--slug s]', EXIT.INVALID);
+    const target = W.worktreePath(cfg, flags.runtime, issue);
+    W.ensureOutsideMain(cfg, target);
+    const st = readState(cfg);
+    const claim = st.claims.find((c) => c.issue === issue);
+    const slug = flags.slug || (claim ? null : slugify(cp.getIssue(issue).title));
+    const branch = claim?.branch || W.branchName(cfg, { runtime: flags.runtime, issue, slug });
+    const other = st.claims.find((c) => c.branch === branch && c.worktree && W.realish(c.worktree) !== W.realish(target));
+    if (other) throw new RelayError(`refused: branch ${branch} is held by another claim (worktree ${other.worktree})`, EXIT.ENV);
+    const held = W.listWorktrees(main).find((w) => w.branch === branch && w.path !== W.realish(target));
+    if (held) throw new RelayError(`refused: branch ${branch} is checked out at ${held.path}`, EXIT.ENV);
+    if (flags['dry-run']) { out(flags, { dry_run: true, path: target, branch }, target); return EXIT.OK; }
+    W.fetchOrigin(main);
+    if (fs.existsSync(target)) {            // a worktree left on an earlier slice's branch: replace it when clean, never discard work
+      const cur = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: target }).stdout.trim();
+      if (cur && cur !== branch) {
+        if (git(['status', '--porcelain'], { cwd: target }).stdout.trim()) throw new RelayError(`refused: worktree ${target} is on "${cur}" with uncommitted changes (expected ${branch})`, EXIT.ENV);
+        git(['worktree', 'remove', '--force', target], { cwd: main }); fs.rmSync(target, { recursive: true, force: true }); git(['worktree', 'prune'], { cwd: main });
+      }
+    }
+    if (!fs.existsSync(target)) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      const hasRemote = W.remoteHas(main, branch), hasLocal = W.localHas(main, branch);
+      const args2 = hasLocal ? ['worktree', 'add', target, branch] : ['worktree', 'add', '-b', branch, target, hasRemote ? `origin/${branch}` : `origin/${cfg.project.default_branch}`];
+      const r = git(args2, { cwd: main });
+      if (r.code !== 0) throw new RelayError(`worktree add failed: ${r.stderr.trim()}`, EXIT.ENV);
+      if (hasLocal && hasRemote) git(['merge', '--ff-only', `origin/${branch}`], { cwd: target });
+    }
+    if (claim) await updateState(cfg, (s) => { const c = s.claims.find((x) => x.issue === issue); if (c) c.worktree = target; });
+    out(flags, { path: target, branch }, target); return EXIT.OK;
+  }
+
+  if (cmd === 'verify') {
+    const top = git(['rev-parse', '--show-toplevel']);
+    if (top.code !== 0) throw new RelayError('not inside a git worktree', EXIT.ENV);
+    const here = W.realish(top.stdout.trim());
+    const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+    const problems = [];
+    if (here === W.mainCheckout(cfg)) problems.push('inside the main checkout');
+    const issue = Number(flags.issue || (/^agent\/[^/]+\/(\d+)-/.exec(branch) || [])[1]);
+    const st = readState(cfg);
+    const claim = st.claims.find((c) => c.issue === issue);
+    if (!issue) problems.push(`cannot determine issue from branch "${branch}" (use --issue)`);
+    else if (!claim) problems.push(`no active claim for #${issue}`);
+    else {
+      if (claim.branch !== branch) problems.push(`branch "${branch}" != claimed branch "${claim.branch}"`);
+      if (claim.worktree && W.realish(claim.worktree) !== here) problems.push(`worktree ${here} != claimed worktree ${claim.worktree}`);
+      const dup = st.claims.find((c) => c.issue !== issue && c.worktree && W.realish(c.worktree) === here);
+      if (dup) problems.push(`worktree is registered to claim #${dup.issue}`);
+    }
+    out(flags, { ok: !problems.length, worktree: here, branch, issue: issue || null, problems }, problems.length ? `verify FAILED: ${problems.join('; ')}` : `ok ${here} ${branch}`);
+    return problems.length ? EXIT.ENV : EXIT.OK;
+  }
+
+  if (cmd === 'remove') {
+    let target;
+    if (flags.scratch) target = path.join(W.worktreeRoot(cfg), `scratch-${flags.scratch}`);
+    else {
+      const issue = Number(arg);
+      const c = readState(cfg).claims.find((x) => x.issue === issue);
+      target = c?.worktree || Object.keys(cfg.runtimes || {}).map((rt) => W.worktreePath(cfg, rt, issue)).find((p) => fs.existsSync(p));
+      if (!target) { out(flags, { removed: false }, 'no worktree found'); return EXIT.OK; }
+    }
+    W.ensureOutsideMain(cfg, target);
+    if (flags['if-clean'] && fs.existsSync(target) && git(['status', '--porcelain'], { cwd: target }).stdout.trim()) { out(flags, { removed: false, dirty: true }, `kept ${target}: uncommitted changes`); return EXIT.OK; }
+    if (!flags['dry-run']) {
+      git(['worktree', 'remove', '--force', target], { cwd: main });
+      fs.rmSync(target, { recursive: true, force: true });
+      git(['worktree', 'prune'], { cwd: main });
+      if (!flags.scratch) await updateState(cfg, (s) => { for (const c of s.claims) if (c.worktree && W.realish(c.worktree) === W.realish(target)) c.worktree = null; });
+    }
+    out(flags, { removed: true, path: target }, `removed ${target}`); return EXIT.OK;
+  }
+
+  if (cmd === 'prune') {
+    const root = W.worktreeRoot(cfg), cutoff = Date.now() - age(flags.older), removed = [];
+    const active = new Set(readState(cfg).claims.map((c) => c.worktree && W.realish(c.worktree)));
+    if (fs.existsSync(root)) for (const d of fs.readdirSync(root)) {
+      const p = path.join(root, d);
+      if (!fs.statSync(p).isDirectory() || fs.statSync(p).mtimeMs > cutoff || active.has(W.realish(p))) continue;
+      if (!flags['dry-run']) { git(['worktree', 'remove', '--force', p], { cwd: main }); fs.rmSync(p, { recursive: true, force: true }); }
+      removed.push(p);
+    }
+    if (!flags['dry-run']) git(['worktree', 'prune'], { cwd: main });
+    out(flags, { removed }, removed.length ? removed.join('\n') : 'nothing to prune'); return EXIT.OK;
+  }
+  throw new RelayError('usage: relay-worktree create|verify|remove|prune', EXIT.INVALID);
+});
