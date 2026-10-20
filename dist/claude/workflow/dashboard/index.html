@@ -20,6 +20,7 @@
   .stat b { display:block; font-size:24px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px; }
   .agent { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; border-left:4px solid var(--idle); }
+  li.stale { color:var(--stale); }
   .agent.working { border-left-color:var(--work); } .agent.waiting { border-left-color:var(--wait); } .agent.stale { border-left-color:var(--stale); }
   .row { display:flex; justify-content:space-between; gap:8px; align-items:center; }
   .name { font-weight:600; word-break:break-all; }
@@ -101,6 +102,17 @@ function render(s) {
     c.append(ul); q.append(c);
   }
   if (s.issues.owner_decisions.length) { const c = el('div', 'col'); c.append(el('h2', '', 'Waiting for you (' + s.issues.owner_decisions.length + ')')); const ul = el('ul'); for (const d of s.issues.owner_decisions) ul.append(el('li', '', '#' + d.issue + ' ' + d.question)); c.append(ul); q.append(c); }
+
+  if ((s.issues.contracts || []).length) {
+    const c = el('div', 'col'); c.append(el('h2', '', 'Issue contracts (' + s.issues.contracts.length + ')'));
+    const ul = el('ul');
+    for (const k of s.issues.contracts) {
+      const li = el('li', k.state === 'GITHUB_CLOSED_CONTRACT_INCOMPLETE' ? 'stale' : '');
+      li.append(el('b', '', '#' + k.issue + ' ' + k.state), el('span', 'meta', ' contract ' + k.complete + '/' + k.total + ' · PRs merged ' + k.prs_merged + ' · runtime proof ' + k.runtime_proof + (k.remaining.length || k.blocked.length ? ' · remaining ' + k.remaining.concat(k.blocked).join(', ') : '')));
+      ul.append(li);
+    }
+    c.append(ul); q.append(c);
+  }
 
   const feed = $('feed'); feed.replaceChildren();
   if (!s.feed.length) feed.append(el('li', 'empty', 'nothing yet'));

@@ -7,6 +7,7 @@ import { ctx } from '../lib/ctx.mjs';
 import { routingOf } from '../lib/router.mjs';
 import { buildPacket } from '../lib/packet.mjs';
 import { validateAgainst } from '../lib/schema.mjs';
+import { closesIssue } from '../lib/issue.mjs';
 import { RelayError, EXIT } from '../lib/exit.mjs';
 
 const acceptance = (body = '') => (/##\s*Acceptance Criteria\s*\n([\s\S]*?)(?:\n##\s|$)/i.exec(body)?.[1] || '').trim();
@@ -32,7 +33,7 @@ run(async () => {
     try {
       const pr = cp.getIssue(Number(num));
       sections.PR ||= `#${num} ${pr.title}`;
-      const linked = /Closes #(\d+)/i.exec(pr.body || '')?.[1];
+      const linked = closesIssue(pr.body);
       if (!sections['Acceptance criteria'] && linked) { const ac = acceptance(cp.getIssue(Number(linked)).body); if (ac) sections['Acceptance criteria'] = ac; }
     } catch { /* control plane unavailable: only supplied sections are used */ }
   }

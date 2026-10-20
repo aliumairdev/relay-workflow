@@ -6,8 +6,8 @@ allowed-tools: Bash(relay-journal:*)
 
 Arguments: $ARGUMENTS
 
-1. `post`: `relay-journal post <issue> --kind <plan|progress|decision|test|blocker|pr|review|rework|summary> --text "<up to 3 lines>"`. Exit 3: text over 1200 characters or invalid kind.
+1. `post`: `relay-journal post <issue> --kind <plan|implementation|progress|decision|test|proof|blocker|pr|review|rework|summary> [--req AC1,AC2] --text "<up to 3 lines>"`. Exit 3: text over 1200 characters or invalid kind.
 2. `read`: `relay-journal read <issue>`; summarise open items.
-3. `check`: `relay-journal check <issue>`; exit 3 lists missing kinds. See the issue-journal skill.
+3. `check`: `relay-journal check <issue> [--final]`; exit 3 lists missing kinds and contract problems (`--final` also requires a complete issue contract). See the issue-journal skill.
 
 Report only results you observed. Anything not run or not observable goes under NOT_VERIFIED with the reason.

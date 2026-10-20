@@ -78,6 +78,22 @@
     },
     "implementer_runtime": {
       "type": "string"
+    },
+    "contract_coverage": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "PASS",
+          "FAIL",
+          "NOT_COVERED"
+        ]
+      }
+    },
+    "issue_complete": {
+      "enum": [
+        "YES",
+        "NO"
+      ]
     }
   }
 }

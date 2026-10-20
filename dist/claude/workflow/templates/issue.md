@@ -22,6 +22,12 @@
 ## Validation
 <commands that must pass>
 
+## Runtime Proof
+<what must be observed in a real environment before the issue is complete, or "none">
+
+## Reproduction
+<named reproduction cases that must be explained and fixed, or "none">
+
 ## Documentation Impact
 <docs to update, or "none">
 

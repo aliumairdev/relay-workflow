@@ -6,7 +6,8 @@ Read AGENTS.md first: it is the single contract for this repository.
 
 - Work claim-first: `relay-claim <issue> --agent <id> --runtime cursor` (or the `claim_issue` MCP tool). Never edit without a claim.
 - Work in your own worktree on `agent/cursor/<issue>-<slug>`; verify with `relay-worktree verify`.
-- Keep the issue history current with `relay-journal post <issue> --kind plan|progress|decision|test|blocker|pr|summary`.
+- The issue is the COMPLETE work contract (`relay-contract show <issue>`): a merged PR is one slice, not the issue. Own every requirement until `relay-contract check <issue>` passes; never close an issue by hand or move a requirement to a follow-up. PRs use `Refs #N` plus a Contract Coverage section.
+- Keep the issue history current with `relay-journal post <issue> --kind plan|implementation|progress|decision|test|proof|blocker|pr|summary [--req AC1]`.
 - Stop with work remaining? `relay-handoff post <issue> --to <runtime> --reason <reason>`; never go silent.
 - Tier names only (T0 docs, T1 implement, T2 high-risk, T3 exceptional); ask `relay-route` before raising effort or tier.
 - Never claim a check passed without running it; list gaps under NOT_VERIFIED. Never commit secrets.

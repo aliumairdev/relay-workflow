@@ -5,7 +5,7 @@
 name: relay-loop
 on:
   issues:
-    types: [labeled]
+    types: [labeled, closed]
   workflow_dispatch:
     inputs:
       runtime:
@@ -15,8 +15,21 @@ concurrency:
   group: relay-loop-${{ github.event.issue.number || 'manual' }}
   cancel-in-progress: false
 jobs:
+  # GitHub closed != contract complete: an issue closed outside Relay's gate is reconciled (reopened) when its contract is incomplete.
+  contract-guard:
+    if: github.event_name == 'issues' && github.event.action == 'closed' && contains(github.event.issue.labels.*.name, 'contract:open')
+    runs-on: [self-hosted, relay]
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconcile the closed issue
+        env:
+          GH_TOKEN: ${{ secrets.RELAY_GH_TOKEN || github.token }}
+        run: npx --yes relay-workflow contract reconcile "${{ github.event.issue.number }}"
   dispatch:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.label.name, 'state:ready') || startsWith(github.event.label.name, 'agent:')
+    if: (github.event_name == 'workflow_dispatch' || github.event.action == 'labeled') && (github.event_name == 'workflow_dispatch' || contains(github.event.label.name, 'state:ready') || startsWith(github.event.label.name, 'agent:'))
     runs-on: [self-hosted, relay]
     timeout-minutes: 120
     permissions:

@@ -23,6 +23,8 @@ runtimes:
   claude: { enabled: true, resume: send_message, models: { T0: m-haiku, T1: m-sonnet, T2: m-opus } }
   codex: { enabled: true, resume: relaunch, exec_cmd: fake-codex, models: { T0: c-mini, T1: c-default, T2: c-top }, bot: { logins: ["codex-bot[bot]"], severity_block: [P0, P1] } }
 review: { cross_runtime: true }
+# Legacy plumbing tests run without issue contracts; contract tests switch it on with enforceContracts(sb).
+contract: { mode: off }
 claims: { lease_minutes: 2, heartbeat_minutes: 1 }
 ci: { steps: [ { name: check, cmd: "npm run -s check" }, { name: test, cmd: "npm test --silent" } ], sync_steps: ["npm test --silent"] }
 bot: { gate: true, logins: ["codex-bot[bot]"] }

@@ -45,6 +45,7 @@ export class GitHub {
   listMilestones() { return this.paged(this.r('milestones?state=all')); }
   createMilestone(title) { return this.api('POST', this.r('milestones'), { title }); }
   closeIssue(n) { return this.api('PATCH', this.r(`issues/${n}`), { state: 'closed' }); }
+  reopenIssue(n) { return this.api('PATCH', this.r(`issues/${n}`), { state: 'open' }); }
   getPR(n) { return this.norm(this.api('GET', this.r(`pulls/${n}`))); }
   listPRs(state = 'open') { return this.paged(this.r(`pulls?state=${state}`)).map((i) => this.norm(i)); }
   createPR({ title, body, head, base }) { return this.norm(this.api('POST', this.r('pulls'), { title, body, head, base })); }

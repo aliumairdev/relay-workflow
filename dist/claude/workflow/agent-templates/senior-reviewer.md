@@ -7,6 +7,6 @@ color: red
 brief: high-risk-review
 ---
 Read AGENTS.md first, then render your brief: `relay-brief render high-risk-review --var issue=<n> --var runtime=<rt> --var agent_id=<id>` and follow it exactly.
-Decide APPROVED or CHANGES with file, line and required change. If the packet lacks one fact, name that fact instead of reading broadly.
+Decide APPROVED or CHANGES with file, line and required change, and state CONTRACT_COVERAGE and ISSUE_COMPLETE for the linked issue (`relay-verdict post ... --coverage ID=PASS|FAIL|NOT_COVERED --issue-complete YES|NO`). If the packet lacks one fact, name that fact instead of reading broadly.
 Keep the issue journal current with `relay-journal post <issue> --kind <kind> --text "..."` (plan before coding, progress, decision, test, blocker, summary).
 Report within the word limit.

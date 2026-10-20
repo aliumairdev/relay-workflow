@@ -1,4 +1,4 @@
-// Relay MCP server: eight neutral tools over stdio (JSON-RPC 2.0, newline-delimited). A thin wrapper: no logic of its own,
+// Relay MCP server: ten neutral tools over stdio (JSON-RPC 2.0, newline-delimited). A thin wrapper: no logic of its own,
 // every tool runs the matching relay-* script so behaviour is identical to the CLI.
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -32,9 +32,15 @@ export const TOOLS = {
   record_usage: { description: 'Append a usage row (no prompts, code or secrets) to the ledger.',
     schema: obj({ run_id: str, agent_id: str, runtime: str, tier: { enum: ['T0', 'T1', 'T2', 'T3'] }, task_class: str, model: str, issue: int, pr: int, tokens_in: int, tokens_out: int, outcome: str }, ['run_id', 'runtime', 'tier', 'task_class', 'outcome']),
     argv: (a) => ['relay-ledger', ['append', '--json', '--row', JSON.stringify(a)]] },
-  owner_decision: { description: 'Park a decision only the owner can make: opens an owner-decision issue and blocks the work item.',
-    schema: obj({ issue: int, question: str, options: strs, default: str, deadline: str }, ['issue', 'question', 'options']),
-    argv: (a) => ['relay-decision', ['open', String(a.issue), '--question', a.question, '--options', a.options.join(','), ...(a.default ? ['--default', a.default] : []), ...(a.deadline ? ['--deadline', a.deadline] : []), '--json']] },
+  owner_decision: { description: 'Park a decision only the owner can make (product ambiguity, destructive production mutation, external/provider authorization, conflicting requirements, scope change, business choice). Rejected unless the question, why the issue contract does not answer it, evidence, options, recommended default and why automatic progress is unsafe are all given. Never for technical choices or for asking whether to finish an issue.',
+    schema: obj({ issue: int, question: str, options: strs, default: str, category: { enum: ['product-ambiguity', 'destructive-production', 'external-provider', 'conflicting-requirements', 'scope-change', 'business-choice'] }, contract_gap: str, evidence: str, unsafe_because: str, requirement: str, deadline: str }, ['issue', 'question', 'options', 'default', 'category', 'contract_gap', 'evidence', 'unsafe_because']),
+    argv: (a) => ['relay-decision', ['open', String(a.issue), '--question', a.question, '--options', a.options.join(','), '--default', a.default, '--category', a.category, '--contract-gap', a.contract_gap, '--evidence', a.evidence, '--unsafe-because', a.unsafe_because, ...(a.requirement ? ['--requirement', a.requirement] : []), ...(a.deadline ? ['--deadline', a.deadline] : []), '--json']] },
+  issue_contract: { description: 'The issue is the COMPLETE work contract; a PR is a slice. Read or gate it: extract|show|update|check|reconcile|audit|close|sweep|pr_section. `check` and `close` fail unless every accepted requirement has an acceptable final disposition (merged PR, passing tests or a GitHub-closed issue are not completion).',
+    schema: obj({ action: { enum: ['extract', 'show', 'update', 'check', 'reconcile', 'audit', 'close', 'sweep', 'pr_section', 'release_audit'] }, issue: int, keep: strs, agent_id: str }, ['action']),
+    argv: (a) => ['relay-contract', [String(a.action).replace('_', '-'), ...(a.issue ? [String(a.issue)] : []), ...(a.keep?.length ? ['--keep', a.keep.join(',')] : []), ...(a.agent_id ? ['--agent', a.agent_id] : []), '--json']] },
+  contract_mark: { description: 'Record the final disposition of requirement(s) with evidence (PASS, FIXED_AND_VERIFIED, VALID_TERMINAL_DISPOSITION, EXTERNALLY_BLOCKED, or an open status such as FAIL/TESTS_ONLY). Refused without the evidence the requirement demands (tests, runtime proof, reproduction classification); follow-ups never satisfy a requirement.',
+    schema: obj({ issue: int, ids: strs, status: str, evidence: strs, pr: int, note: str, classification: { enum: ['fixed_by_change', 'independently_recovered', 'non_reproducible', 'unexplained'] }, blocker: str, needs: str, cite: str, agent_id: str }, ['issue', 'ids', 'status']),
+    argv: (a) => ['relay-contract', ['mark', String(a.issue), a.ids.join(','), a.status, ...(a.evidence || []).flatMap((e) => ['--evidence', e]), ...(a.pr ? ['--pr', String(a.pr)] : []), ...(a.note ? ['--note', a.note] : []), ...(a.classification ? ['--classification', a.classification] : []), ...(a.blocker ? ['--blocker', a.blocker] : []), ...(a.needs ? ['--needs', a.needs] : []), ...(a.cite ? ['--cite', a.cite] : []), ...(a.agent_id ? ['--agent', a.agent_id] : []), '--json']] },
 };
 
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -88,5 +94,5 @@ export function serve(input = process.stdin, output = process.stdout, ctx = {}) 
   });
 }
 
-// Used by `relay-workflow doctor`: the server must list all eight tools.
-export async function selfTest() { return Object.keys(handle({ id: 1, method: 'tools/list' }).result.tools.reduce((o, t) => ({ ...o, [t.name]: 1 }), {})).length === 8; }
+// Used by `relay-workflow doctor`: the server must list every tool.
+export async function selfTest() { return Object.keys(handle({ id: 1, method: 'tools/list' }).result.tools.reduce((o, t) => ({ ...o, [t.name]: 1 }), {})).length === Object.keys(TOOLS).length; }

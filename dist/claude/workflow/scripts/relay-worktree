@@ -13,7 +13,7 @@ import { RelayError, EXIT } from '../lib/exit.mjs';
 const age = (s) => { const m = /^(\d+)([dhm])$/.exec(s || '7d'); if (!m) throw new RelayError(`bad --older ${s}`, EXIT.INVALID); return Number(m[1]) * { d: 864e5, h: 36e5, m: 6e4 }[m[2]]; };
 
 run(async () => {
-  const { flags, args } = parse(process.argv.slice(2), { runtime: { type: 'string' }, slug: { type: 'string' }, scratch: { type: 'string' }, ref: { type: 'string' }, issue: { type: 'string' }, older: { type: 'string' } });
+  const { flags, args } = parse(process.argv.slice(2), { runtime: { type: 'string' }, slug: { type: 'string' }, scratch: { type: 'string' }, ref: { type: 'string' }, issue: { type: 'string' }, older: { type: 'string' }, 'if-clean': { type: 'boolean' } });
   const [cmd, arg] = args;
   const { cfg, cp } = ctx();
   const main = cfg.__root;
@@ -46,6 +46,13 @@ run(async () => {
     if (held) throw new RelayError(`refused: branch ${branch} is checked out at ${held.path}`, EXIT.ENV);
     if (flags['dry-run']) { out(flags, { dry_run: true, path: target, branch }, target); return EXIT.OK; }
     W.fetchOrigin(main);
+    if (fs.existsSync(target)) {            // a worktree left on an earlier slice's branch: replace it when clean, never discard work
+      const cur = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: target }).stdout.trim();
+      if (cur && cur !== branch) {
+        if (git(['status', '--porcelain'], { cwd: target }).stdout.trim()) throw new RelayError(`refused: worktree ${target} is on "${cur}" with uncommitted changes (expected ${branch})`, EXIT.ENV);
+        git(['worktree', 'remove', '--force', target], { cwd: main }); fs.rmSync(target, { recursive: true, force: true }); git(['worktree', 'prune'], { cwd: main });
+      }
+    }
     if (!fs.existsSync(target)) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       const hasRemote = W.remoteHas(main, branch), hasLocal = W.localHas(main, branch);
@@ -90,6 +97,7 @@ run(async () => {
       if (!target) { out(flags, { removed: false }, 'no worktree found'); return EXIT.OK; }
     }
     W.ensureOutsideMain(cfg, target);
+    if (flags['if-clean'] && fs.existsSync(target) && git(['status', '--porcelain'], { cwd: target }).stdout.trim()) { out(flags, { removed: false, dirty: true }, `kept ${target}: uncommitted changes`); return EXIT.OK; }
     if (!flags['dry-run']) {
       git(['worktree', 'remove', '--force', target], { cwd: main });
       fs.rmSync(target, { recursive: true, force: true });

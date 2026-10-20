@@ -5,10 +5,16 @@
 <role name>
 
 ## Issue
-Closes #<N>
+Refs #<N>
 
 ## Branch
 <agent/runtime/N-slug>
+
+## Contract Coverage
+Issue: #<N>
+- <ID>: implemented | not covered by this PR   (every unresolved requirement, from `relay-contract pr-section <N>`)
+
+Issue completion: NO — additional accepted requirements remain.   (YES only if this PR implements every unresolved requirement; the issue still closes only after the contract gate)
 
 ## Outcome
 <what now works>

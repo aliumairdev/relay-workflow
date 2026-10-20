@@ -41,9 +41,10 @@ Order is mandatory: canonical core first, then the Claude plugin and the Codex a
 | M7 Codex adapter | `relay-codex-dispatch`, `relay-loop`, bot integration, cross-review wiring, fallback relabel | M3, M4, M5 | FR-22, 42, 46, 47, 52 |
 | M8 Proof stage and honesty tooling | `relay-proof`, evidence lint, mutation check, post-merge QA brief, root-cause skill, Shopify profile proof steps | M4 | FR-58..63 |
 | M9 CLI installer and doctor | `npx relay-workflow init|doctor|update|uninstall` | M6, M7 | FR-4, 50, 54, 56, 57 |
-| M10 MCP server | Eight tools | M3, M4, M5 | FR-55 |
+| M10 MCP server | Ten tools (eight originally; `issue_contract` and `contract_mark` added by M13) | M3, M4, M5 | FR-55 |
 | M11 Other adapters and profiles | Cursor, Gemini, Copilot generators; Rails, Next.js profiles | M9 | FR-53 |
 | M12 Pilot | Dry-run on a real second project; metrics report | all | PRD section 11 R7 |
+| M13 Complete issue ownership | Issue contract (`relay-contract`), closure gate, slice-aware merge/review/QA/status/hook/MCP | M4, M8, M10 | PRD 6.11a |
 
 ## 3. Ordered tasks with acceptance tests
 
@@ -125,6 +126,11 @@ Each task lists acceptance tests (AT). Implement tests first where practical (mu
 1. Generators for Cursor, Gemini, Copilot; golden tests.
 2. Rails and Next.js profiles with smoke tests against tiny sample projects (CI steps run, resolver fixtures pass).
 - AT: T-GEN-1..3 (golden output), T-PROFILE-1 (Rails sample), T-PROFILE-2 (Next.js sample).
+
+### M13 Complete issue ownership (issue contract)
+
+Build: `core/lib/contract.mjs`, `contractops.mjs`, `schemas/contract.schema.json`, `scripts/relay-contract`, `briefs/ownership.md`, `skills/issue-contract`, `commands/contract.md`; wire merge queue, `relay-pr`, `relay-claim`, dispatch, verdict, QA, proof, journal, decision, status, dashboard, Stop hook, destructive gate, MCP, labels, templates, installer rules and agents (ARCHITECTURE 8.3, PLUGIN_SPEC 9.3).
+Acceptance (tests `tests/unit/contract.test.mjs`, `tests/integration/contract*.test.mjs`, `m10-mcp`): a partial PR keeps the issue active; three PRs close it only after proof and audit; follow-up escape denied; "may I continue?" decisions rejected and genuine ones allowed (parking only their requirement); GitHub-closed-early detected and reopened or blocked; tests-only with runtime proof required denied; an external blocker continues other work; all-external waits but is not complete; mid-run drift denied until reconciled; `Closes #` rewritten; NOT_VERIFIED required criterion denied; headless redispatch of a merged-but-incomplete issue; every runtime sees the same briefs, rules and MCP gate.
 
 ### M12 Pilot
 1. Run on a throwaway non-Shopify project in fast-merge mode for 10 issues, then gated for 10.
@@ -223,6 +229,8 @@ Each row: input (task class, labels, changed paths, size, rework rounds, proof f
 | 20 | triage batch of 12 issues | T0 low effort |
 
 ### 6.3 Test IDs index
+
+Issue ownership (M13): T-CONTRACT-E2E (4 requirements, 3 PRs), T-CONTRACT-3/3b (follow-up escape, owner descope), T-CONTRACT-4/5 (owner decisions), T-CONTRACT-6/11 (GitHub-closed early, `Closes #`), T-CONTRACT-7/12 (tests-only, NOT_VERIFIED), T-CONTRACT-8/9 (external blockers), T-CONTRACT-10 (drift), T-CONTRACT-REVIEW, T-CONTRACT-QA, T-CONTRACT-JOURNAL, T-CONTRACT-BOOTSTRAP, T-CONTRACT-OFF, T-CONTRACT-REDISPATCH, T-CONTRACT-GATE-HOOK, T-XRT-1..5 (cross-runtime), T-MCP-CONTRACT.
 
 T-CFG-1, T-INIT-1, T-INIT-3, T-DOC-1, T-GATE-2, T-LABEL-1/2, T-WT-1, T-LOCK-1, T-WAIT-1, T-CLAIM-1/2/3, T-OWN-1, T-HAND-1, T-CI-1, T-RES-1..4, T-BOT-1, T-MERGE-1/2/3, T-STACK-1, T-XREV-1, T-GOV-1, T-RL-1, T-LOAD-1, T-PACKET-1, T-REPORT-1, T-HOOK-1..5, T-CODEX-1/2, T-FAIL-RT, T-CROSS-1, T-HON-1, T-MUT-1, T-PROOF-1/2, T-LESSON-1, T-CLI-1..5, T-MCP-1/2, T-GEN-1..3, T-PROFILE-1/2. T-GATE-2: UI issue without design spec reference is refused at dispatch with exit 8.
 

@@ -8,6 +8,7 @@ import { relayDir } from './config.mjs';
 import { readAll } from './ledger.mjs';
 import { findLog } from './journal.mjs';
 import { now } from './clock.mjs';
+import * as Ops from './contractops.mjs';
 
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 const RECENT_MS = 6 * 3600e3;
@@ -34,12 +35,13 @@ export function snapshot(cfg, cp) {
     upsert(c.agent_id, { runtime: c.runtime, issue: c.issue, branch: c.branch, lease_until: c.lease_until, status: expired ? 'stale' : prev?.status === 'waiting' ? 'waiting' : 'working', task: prev?.task || 'implement', ...(expired ? { reason: 'lease expired: run relay-lease sweep' } : {}) });
   }
 
-  const issues = { by_state: {}, lists: { ready: [], review: [], blocked: [], in_flight: [] }, owner_decisions: st.owner_decisions || [] };
+  const issues = { by_state: {}, lists: { ready: [], review: [], blocked: [], in_flight: [] }, owner_decisions: st.owner_decisions || [], contracts: [] };
   const feed = [];
   try {
     const open = cp.listIssues({ state: 'open' });
     const state = (i) => i.labels.find((l) => l.startsWith('state:'))?.slice(6) || 'none';
     for (const i of open) issues.by_state[state(i)] = (issues.by_state[state(i)] || 0) + 1;
+    issues.contracts = Ops.summaries(cp, cfg, { open });
     const pick = (s) => open.filter((i) => state(i) === s).slice(0, 8).map((i) => ({ number: i.number, title: i.title, labels: i.labels.filter((l) => /^(agent|priority|type):/.test(l)) }));
     issues.lists.ready = pick('ready'); issues.lists.review = pick('review'); issues.lists.blocked = pick('blocked');
     issues.lists.in_flight = [...pick('claimed'), ...pick('in-progress')];

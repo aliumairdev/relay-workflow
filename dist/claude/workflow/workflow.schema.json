@@ -209,6 +209,16 @@
       "additionalProperties": false,
       "properties": { "require": { "$ref": "#/$defs/strList" } }
     },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["enforce", "warn", "off"] },
+        "closing_keywords": { "enum": ["never", "final-pr-only"] },
+        "reopen_on_incomplete": { "type": "boolean" },
+        "release_blocking": { "type": "boolean" }
+      }
+    },
     "notifications": { "type": "object" }
   }
 }
