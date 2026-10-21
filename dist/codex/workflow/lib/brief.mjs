@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { CORE } from './config.mjs';
 import { RelayError, EXIT } from './exit.mjs';
 
-const RULE_FILES = ['token-rules', 'codex-rules', 'worktree-safety', 'honesty', 'security'];
+const RULE_FILES = ['token-rules', 'codex-rules', 'worktree-safety', 'honesty', 'security', 'plain-english'];
 // Briefs about work on an issue carry the ownership contract (issue = complete work contract; PR = slice).
 const OWNERSHIP_BRIEFS = ['dispatch', 'review', 'high-risk-review', 'handoff', 'fixmerge', 'post-merge-qa'];
 // Briefs for work on an issue always carry the journal rule (not optional via brief_rules).
@@ -59,6 +59,8 @@ export function renderBrief(name, userVars = {}, cfg = null) {
       if (r === 'worktree-safety' && !('issue' in vars) && !('branch' in vars)) continue;
       parts.push(fill(read(`briefs/${r}.md`), { branch: '<branch>', issue: '<N>', runtime: vars.runtime || '<runtime>', ...vars }, missing));
     }
+    // plain-english is not optional: it applies even when a project overrides brief_rules
+    if (!rules.includes('plain-english')) parts.push(read('briefs/plain-english.md'));
     if (JOURNAL_BRIEFS.includes(name) && 'issue' in vars) parts.push(fill(read('briefs/journal.md'), vars, missing));
     if (OWNERSHIP_BRIEFS.includes(name) && 'issue' in vars) parts.push(fill(read('briefs/ownership.md'), vars, missing));
     const rt = vars.runtime;
