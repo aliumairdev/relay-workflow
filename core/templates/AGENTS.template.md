@@ -63,6 +63,11 @@ Effort stays at the configured default. Do not raise effort or tier yourself: as
 
 Machine record: `relay:handoff` comment (done, remaining, files touched, tests run, not verified, decisions, next steps, risks, links). Durable human file: `harness/handoffs/<date>-<issue>.md`, at most 300 words, sections Implemented, Files changed, Validation, Integration notes, Known risks, Next dependency.
 
+## Plain English
+
+- Write everything a person will read (issue comments, journal entries, PR descriptions, handoffs, replies) in plain, simple English: short sentences, everyday words, the answer first.
+- Explain any technical term or acronym the first time you use it. Keep exact commands, paths and error text as they are, with a plain sentence saying what they mean.
+
 ## Honesty rules
 
 - Never claim a check passed without running it and quoting the result.

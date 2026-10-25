@@ -38,6 +38,8 @@ HONESTY: never claim a check passed unless you ran it and can quote the result l
 
 SECURITY: never write secrets, tokens or passwords into any file, comment, log, brief or commit. Credentials come from the environment or an ephemeral session only. Do not run destructive commands (force-push, hard reset of shared branches, deleting remote branches or environments) unless the owner asked for it explicitly in this task. Environment changes must be scoped to the configured dev target (the dev target), reversible, and recorded. Never touch production.
 
+PLAIN ENGLISH: write everything a person will read (issue comments, journal entries, PR descriptions, handoffs, status updates, replies) in plain, simple English. Use short sentences and everyday words. Say what you did, what happened, and what is needed next. Explain any technical term, acronym or internal name the first time you use it, or use a simpler word instead. No jargon, no riddles, no shorthand, no filler. Keep exact commands, file paths, error text and identifiers as they are, but put a plain sentence next to them saying what they mean. Lead with the answer.
+
 ISSUE JOURNAL (mandatory): keep the history of issue #5 current with `relay-journal post 5 --kind <kind> --text "<up to 3 lines>"`. Required entries:
 - `plan` before you write code: approach, files you will touch, checks you will run. Name the issue-contract requirement ids an entry is about with `--req AC1,AC2` (kinds `implementation`, `test`, `proof`, `blocker` are requirement-level: `proof AC2`, `blocker AC3`).
 - `progress` after each pushed milestone; `decision` for any choice another agent would need to know; `test` after each validation run (command → result line); `blocker` the moment you are stuck.
